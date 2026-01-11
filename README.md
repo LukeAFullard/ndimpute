@@ -1,13 +1,11 @@
 <p align="center">
-  <img src="assets/Logo.jpg" width="600" alt="ndimpute Logo">
+  <img src="https://raw.githubusercontent.com/LukeAFullard/ndimpute/main/assets/Logo.jpg" width="600" alt="ndimpute Logo">
 </p>
 
 # ndimpute
 
 [![PyPI version](https://img.shields.io/pypi/v/ndimpute.svg)](https://pypi.org/project/ndimpute/)
-[![Python versions](https://img.shields.io/pypi/pyversions/ndimpute.svg)](https://pypi.org/project/ndimpute/)
-[![License](https://img.shields.io/pypi/l/ndimpute.svg)](https://github.com/yourusername/ndimpute/blob/main/LICENSE)
-[![Tests](https://img.shields.io/badge/tests-passing-brightgreen.svg)](https://github.com/yourusername/ndimpute/actions)
+[![License](https://img.shields.io/pypi/l/ndimpute.svg)](https://github.com/LukeAFullard/ndimpute/blob/main/LICENSE)
 
 **Unbiased statistical imputation for censored data** (environmental nondetects, survival times, detection limits, and interval data).
 
@@ -102,17 +100,11 @@ df = impute(data, method='parametric', dist='weibull')
 
 ## Examples
 
-See the `examples/` directory for runnable scripts:
-
-*   [01_environmental](examples/01_environmental): Left-censored ROS.
-*   [02_reliability](examples/02_reliability): Right-censored Weibull.
-*   [03_mixed](examples/03_mixed): Mixed censoring.
-*   [06_interval](examples/06_interval): Interval censoring with Turnbull.
-*   [04_visualization](examples/04_visualization): Visualizing imputed distributions.
+See the [examples/](https://github.com/LukeAFullard/ndimpute/tree/main/examples) directory for runnable scripts:
 
 ## Statistical Methods
 
-For deep dives into the algorithms (Kaplan-Meier, Turnbull, MLE), see [STATISTICAL_METHODS.md](STATISTICAL_METHODS.md).
+For deep dives into the algorithms (Kaplan-Meier, Turnbull, MLE), see [STATISTICAL_METHODS.md](https://github.com/LukeAFullard/ndimpute/blob/main/STATISTICAL_METHODS.md).
 
 ## Limitations
 
