@@ -1,0 +1,13 @@
+original_value,censoring_status,r_imputed
+1.0,TRUE,0.1873
+1.0,TRUE,0.2529
+1.0,TRUE,0.3277
+2.4,FALSE,2.4
+3.5,FALSE,3.5
+5.1,FALSE,5.1
+8.0,FALSE,8.0
+1.0,TRUE,0.4248
+1.0,TRUE,0.5487
+12.0,FALSE,12.0
+1.0,TRUE,0.6856
+4.2,FALSE,4.2
