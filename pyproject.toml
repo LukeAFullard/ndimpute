@@ -1,28 +1,29 @@
-[build-system]
-requires = ["setuptools>=61.0"]
-build-backend = "setuptools.build_meta"
-
-[project]
+[tool.poetry]
 name = "ndimpute"
 version = "0.1.0"
 description = "A package for imputing arbitrarily censored data"
-dependencies = [
-    "numpy>=1.24.0",
-    "pandas>=2.0.0",
-    "scipy>=1.13.0"
-]
-requires-python = ">=3.8"
+authors = ["Luke Fullard"]
+readme = "README.md"
+repository = "https://github.com/LukeAFullard/ndimpute"
+homepage = "https://github.com/LukeAFullard/ndimpute"
+packages = [{include = "ndimpute", from = "src"}]
 
-[project.optional-dependencies]
-viz = [
-    "matplotlib",
-    "seaborn"
-]
-dev = [
-    "pytest",
-    "matplotlib",
-    "seaborn"
-]
+[tool.poetry.dependencies]
+python = ">=3.9"
+numpy = ">=1.24.0"
+pandas = ">=2.0.0"
+scipy = ">=1.13.0"
+matplotlib = {version = "*", optional = true}
+seaborn = {version = "*", optional = true}
 
-[tool.setuptools.packages.find]
-where = ["src"]
+[tool.poetry.extras]
+viz = ["matplotlib", "seaborn"]
+
+[tool.poetry.group.dev.dependencies]
+pytest = "*"
+matplotlib = "*"
+seaborn = "*"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
