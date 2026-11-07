@@ -38,27 +38,27 @@ Running Validation: 05 Edge Cases & Robustness
 Running Sub-test: High Censoring (95%)
 Scenario: N=100, 95% Left Censored (< 1.0). 5 Observed values (1.1...1.5).
 Max Imputed (Should be <= 1.0): 1.0
-Std Dev of Imputed: 0.20675544814859903
+Std Dev of Imputed: 0.2030567568312353
 [PASS]
 
 Running Sub-test: Minimal N (N=3)
 Scenario: N=3, 1 Censored (<1), 2 Observed (2, 3).
-Imputed Value: 1.0
+Imputed Value: 0.9752134743323576
 [PASS]
 
 Running Sub-test: Insufficient Uncensored
 Scenario: N=10, 1 Uncensored. Expecting ValueError.
-Caught expected error: Too few uncensored observations to fit regression.
+Caught expected error: Too few uncensored observations to fit regression (need at least 2).
 [PASS]
 
 Running Sub-test: 100% Censoring
 Scenario: 100% Censoring. Expecting ValueError.
-Caught expected error: Too few uncensored observations to fit regression.
+Caught expected error: Too few uncensored observations to fit regression (need at least 2).
 [PASS]
 
 Running Sub-test: Invalid Data (Negative)
 Scenario: Negative data for LogNormal ROS. Expecting ValueError.
-Caught expected error: Values must be positive for lognormal distribution.
+Caught expected error: Auto-distribution selection failed; no candidate could be fitted: {'lognormal': 'non-positive values'}
 [PASS]
 
 [PASS] All Edge Cases Handled Correctly.

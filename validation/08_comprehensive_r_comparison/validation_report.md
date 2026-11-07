@@ -1,55 +1,51 @@
 # Validation: Comprehensive R Comparison (08)
 
 ## 1. Test Description
-**What is being tested:**
-A large-scale parameter sweep comparing `ndimpute` (Version 2 with Kaplan-Meier Plotting Positions) against a "Reference ROS" implementation (simulating NADA's simpler rank-based logic) across multiple dimensions:
-- Distributions (Lognormal, Normal)
-- Sample Sizes (N=20, 50, 200)
-- Censoring Levels (20%, 50%, 80%)
-- Detection Limit Types (Single, Multiple)
+A parameter sweep comparing `ndimpute` ROS with **`NADA::ros`** (R, NADA 1.6-1.1) across:
+- Distributions: lognormal (`forwardT="log"`) and normal (`forwardT=NULL`, `reverseT=NULL`)
+- Sample sizes: N = 20, 50, 200
+- Censoring levels: 20 %, 50 %, 80 %
+- Detection limits: single, or three limits assigned at random
 
-**Category:**
-Tier 4: Comparative Performance (Regression Testing).
+**Category:** Tier 4, parity with the reference implementation.
 
-## 2. Rationale
-**Why this test is important:**
-This test quantifies the difference between the "Simple" ranking logic (used in `ndimpute` v0.1 and the reference script) and the "Advanced" Hirsch-Stedinger/Kaplan-Meier logic (used in `ndimpute` v0.2). Deviations here represent the *improvement* in handling censoring rigor, particularly for multiple detection limits.
+## 2. History (why this report was rewritten)
+Earlier versions of this case did not compare against R:
+* The benchmarks were produced by `simulate_r_data.py`, a Python rank-based stand-in, and not by NADA. That script and `validate_legacy_parity.py` have been removed.
+* `generate_r_suite.R` wrote NADA's `$modeled` (which is in **sorted** order) next to the unsorted data.
+* For the normal distribution it passed `forwardT="identity"` while leaving `reverseT="exp"`, so R exponentiated the normal-scale fit.
+* Datasets in which NADA drops censored values above the largest detect were not handled, which also misaligns rows.
+
+All four problems are fixed. Datasets NADA would truncate are now skipped.
 
 ## 3. Success Criteria
-**Expected Outcome:**
-- **Deviation:** `ndimpute` should deviate from the simple reference benchmark, especially for multiple limits and high censoring, as KM handles these differently than naive ranking.
-- **Robustness:** No crashes across the 36 scenarios.
-- **Distributions:** The `normal` distribution logic should function without errors (validated via existence of results).
+- [x] With the NADA-equivalent configuration (`plotting_position='kaplan-meier'`, `impute_type='quantile'`, `clamp=False`), every imputed value matches `NADA::ros` to within 1e-8.
 
-## 4. Execution
-1.  Run `python3 simulate_r_data.py` to generate 36 benchmark datasets (using Simple Rank-based ROS).
-2.  Run `python3 validate_suite.py` to process them with `ndimpute` (using Advanced KM ROS).
-3.  Run `python3 analyze_results.py` to generate summary stats.
+## 4. Reproduce
+```bash
+Rscript generate_r_suite.R      # writes benchmark_*.csv (36 scenarios; 31 usable)
+python validate_suite.py        # writes suite_results.csv
+python analyze_results.py       # heatmap_mae.png, boxplot_mae.png
+```
 
 ## 5. Results
+31 of the 36 scenarios were generated. The 5 skipped are normal, multiple-limit scenarios in which a limit exceeds the largest detect, so NADA would drop rows.
 
-**Mean MAE by Scenario (Measuring V2 vs V1 Logic Delta):**
+| Distribution | Limits | Datasets | Max abs. difference vs NADA |
+| :--- | :--- | ---: | ---: |
+| lognormal | multiple | 9 | 8.7e-14 |
+| lognormal | single | 9 | 5.3e-14 |
+| normal | multiple | 4 | 5.3e-14 |
+| normal | single | 9 | 9.8e-14 |
 
-| Dist | Limit | Mean Difference (MAE) | Interpretation |
-| :--- | :--- | :--- | :--- |
-| **Lognormal** | **Single** | **2.08** | **Systematic Shift.** KM plotting positions ($i/N$) differ systematically from Weibull positions ($i/(N+1)$) used in the benchmark, causing a shift in the regression line intercept. This is an expected change in methodology. |
-| **Lognormal** | Multiple | 5.10 | **Significant Improvement.** For multiple limits, KM correctly accounts for the information content of different limits, whereas simple ranking does not. This large delta confirms the "Upgrade" is active. |
-| **Normal** | Single | 0.77 | **Systematic Shift.** Similar to Lognormal, but on a linear scale. |
-| **Normal** | Multiple | 1.92 | **Significant Improvement.** |
+**Console output (tail):**
+```text
+[PASS] 31/31 datasets match NADA::ros to 1e-8.
+```
 
-**Validation of Legacy Mode (`plotting_position='simple'`):**
-We also verified that running `ndimpute(..., plotting_position='simple')` recovers the benchmark logic closely (MAE < 0.03 for single limits), confirming that the implementation allows backward compatibility for comparison. Remaining deviations are due to `ndimpute`'s safety guardrails (clamping imputations to $\le LOD$), which the raw benchmark lacks.
-
-## 6. Visual Evidence
-
-### Error Heatmap
-![Heatmap](heatmap_mae.png)
-*[Caption: Heatmap showing the magnitude of difference between V1 and V2 logic. The difference increases with Censoring Level (Y-axis), which is expected as the plotting position assumptions play a larger role when less data is observed.]*
-
-## 7. Interpretation & Conclusion
-**Analysis:**
-The validation suite confirms that `ndimpute` v0.2 has successfully transitioned to the more robust **Hirsch-Stedinger (Kaplan-Meier)** plotting position logic. The divergence from the simple rank-based benchmarks is consistent with the theoretical differences between $i/N$ and $i/(N+1)$ scaling, and the improved handling of multiple thresholds. The package is now using the advanced methodology recommended in the audit.
+## 6. Interpretation & Conclusion
+`ndimpute`'s ROS is numerically identical to `NADA::ros`, to floating-point precision, for single and multiple detection limits on both the log and the original scale. The default `clamp=True` differs from NADA only where NADA's line predicts a value above its own detection limit, in which case `ndimpute` caps it at the limit. See also `validation/11_r_parity`, which covers the plotting positions themselves and the parametric (survreg) fits.
 
 **Pass/Fail Status:**
-- [x] **PASS** (Methodology Upgrade Verified)
+- [x] **PASS**
 - [ ] **FAIL**

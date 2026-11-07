@@ -21,7 +21,9 @@ ros_model <- NADA::ros(obs, cens)
 
 # 3. Extract Modeled Values
 # NADA stores the filled-in values in $modeled
-r_imputed <- ros_model$modeled
+# NADA returns $modeled in SORTED order -- map back to the original row order.
+ix_sorted <- order(obs)
+r_imputed <- numeric(length(obs)); r_imputed[ix_sorted] <- ros_model$modeled
 
 # 4. Export Truth
 df <- data.frame(

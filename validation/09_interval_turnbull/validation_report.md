@@ -34,8 +34,8 @@ Data Generated. N=100. Example intervals: [[ 8. 10.]
  [10. 12.]]
 Percentage inside bounds: 100.0%
 True Mean: 7.7461
-Imputed Mean: 7.7276
-Bias: -0.0184 (-0.2%)
+Imputed Mean: 7.7354
+Bias: -0.0107 (-0.1%)
 Saved interval_check.png
 [PASS] Mean recovered successfully.
 ```
@@ -49,8 +49,8 @@ Saved interval_check.png
 **Analysis:**
 The Interval ROS implementation proved highly effective.
 1.  **Safety:** 100% of imputed values respected their physical intervals (e.g., a value known to be in $[6, 8]$ was imputed as $\approx 7.1$).
-2.  **Accuracy:** The mean of the imputed distribution biased only **-0.2%** from the true population mean.
-3.  **Methodology:** The use of the Turnbull Estimator to derive plotting positions provided a robust basis for the ROS regression, correctly handling the overlapping nature of interval data.
+2.  **Accuracy:** The mean of the imputed distribution biased only **-0.1%** (re-run with the corrected Turnbull innermost intervals) from the true population mean.
+3.  **Methodology:** the Turnbull estimator (now using proper innermost intervals) supplies the plotting positions. Interval ROS is a semi-parametric, exploratory method; `method='parametric'` (exact interval likelihood, validated against `survival::survreg`) is recommended for inference.
 
 **Pass/Fail Status:**
 - [x] **PASS**

@@ -1,144 +1,120 @@
-import numpy as np
+"""
+Turnbull (1976) non-parametric maximum likelihood estimator (NPMLE) for
+interval-censored data.
 
-def turnbull_em(left, right, max_iter=1000, tol=1e-5):
+Each observation i is a closed interval [L_i, R_i] (L_i == R_i for exact
+values, L_i = -inf for left-censored, R_i = inf for right-censored).
+
+The NPMLE places all probability mass on the *innermost intervals* (Peto 1973;
+Turnbull 1976): intervals [l, r] where l is a left endpoint and r is the next
+endpoint in sorted order, which is a right endpoint, with no other endpoint in
+between. For closed intervals, ties are ordered left-endpoints-first so that
+exact observations produce singleton innermost intervals [x, x]. Masses are
+found with the self-consistency (EM) algorithm.
+
+For right-censored-only data this reproduces the Kaplan-Meier estimator, and
+for left-censored-only data the reverse Kaplan-Meier estimator.
+"""
+
+import numpy as np
+from scipy import sparse
+
+
+def innermost_intervals(left, right):
     """
-    Computes the Non-Parametric Maximum Likelihood Estimator (NPMLE)
-    for interval-censored data using the Turnbull EM algorithm.
+    Turnbull innermost intervals for closed intervals [left_i, right_i].
+
+    Returns:
+        ndarray: (M, 2) array of [start, end].
+    """
+    left = np.asarray(left, dtype=float)
+    right = np.asarray(right, dtype=float)
+    pts = np.concatenate([left, right])
+    kind = np.concatenate([np.zeros(len(left)), np.ones(len(right))])  # 0 = L, 1 = R
+    # Sort by value, then L before R at ties (closed intervals).
+    order = np.lexsort((kind, pts))
+    pts, kind = pts[order], kind[order]
+    is_pair = (kind[:-1] == 0) & (kind[1:] == 1)
+    starts = pts[:-1][is_pair]
+    ends = pts[1:][is_pair]
+    out = np.unique(np.column_stack([starts, ends]), axis=0)
+    return out
+
+
+def turnbull_em(left, right, max_iter=10000, tol=1e-10):
+    """
+    NPMLE for interval-censored data via the Turnbull self-consistency algorithm.
 
     Args:
-        left (array): Lower bounds of intervals.
-        right (array): Upper bounds of intervals.
-                       Use np.inf for right-censored (L, inf).
-                       Use L for exact observations (L, L).
+        left (array): Lower bounds (use -inf for left-censored).
+        right (array): Upper bounds (use inf for right-censored; = left for exact).
+        max_iter (int): Maximum EM iterations.
+        tol (float): Convergence tolerance on the max absolute change in mass.
 
     Returns:
         tuple: (intervals, probs)
-            intervals: (M, 2) array of equivalence classes [start, end].
-            probs: (M,) array of probability mass assigned to each interval.
+            intervals: (M, 2) array of innermost intervals [start, end].
+            probs: (M,) probability mass assigned to each interval (sums to 1).
     """
-    left = np.array(left)
-    right = np.array(right)
+    left = np.asarray(left, dtype=float)
+    right = np.asarray(right, dtype=float)
     n = len(left)
+    if n == 0:
+        return np.empty((0, 2)), np.empty(0)
+    if np.any(left > right):
+        raise ValueError("Interval lower bounds must not exceed upper bounds.")
 
-    # 1. Determine Equivalence Intervals
-    # Collect all unique endpoints
-    endpoints = np.unique(np.concatenate([left, right]))
-    endpoints = endpoints[~np.isinf(endpoints)] # Remove infinity
-    endpoints.sort()
-
-    if len(endpoints) == 0:
-        return np.array([]), np.array([])
-
-    # If we have only 1 unique endpoint (e.g., all data is exactly x),
-    # we need to handle it.
-    if len(endpoints) == 1:
-        e = endpoints[0]
-        intervals = np.array([[e, e]])
-        probs = np.array([1.0])
-        return intervals, probs
-
-    # Generate Candidates
-    # 1. Singleton [e_i, e_i] for each endpoint
-    # 2. Open Interval (e_i, e_{i+1}) for each gap
-
-    candidates = []
-    for i in range(len(endpoints)):
-        # Singleton
-        candidates.append([endpoints[i], endpoints[i]])
-
-        if i < len(endpoints) - 1:
-            # Interval between
-            # We represent (e_i, e_{i+1}) as [e_i, e_{i+1}] for storage.
-            # We rely on 'is_singleton' check below to distinguish from closed singletons.
-            candidates.append([endpoints[i], endpoints[i+1]])
-
-    valid_intervals = []
-    alpha_list = []
-
-    for start, end in candidates:
-        is_singleton = (start == end)
-
-        if is_singleton:
-            # Interval is [start, start]
-            # Covered if L <= start AND start <= R
-            covered = (left <= start) & (right >= start)
-        else:
-            # Interval is (start, end)
-            # Covered if [L, R] contains the open interval (start, end).
-            # i.e. L <= start and end <= R.
-            # Standard Turnbull logic: candidate must be subset of observation.
-            covered = (left <= start) & (right >= end)
-
-        if np.any(covered):
-            valid_intervals.append([start, end])
-            alpha_list.append(covered)
-
-    if not valid_intervals:
-        return np.array([]), np.array([])
-
-    intervals = np.array(valid_intervals)
-    alpha = np.column_stack(alpha_list).astype(float) # (N, M)
+    intervals = innermost_intervals(left, right)
     m = len(intervals)
 
-    # 2. EM Algorithm (Self-Consistency)
-    # Initialize probabilities uniform
-    p = np.ones(m) / m
+    # alpha[i, j] = 1 if innermost interval j is contained in observation i.
+    s, e = intervals[:, 0], intervals[:, 1]
+    rows, cols = [], []
+    order_s = np.argsort(s)
+    s_sorted = s[order_s]
+    for i in range(n):
+        # Candidates with start >= left_i, then require end <= right_i
+        k0 = np.searchsorted(s_sorted, left[i], side='left')
+        cand = order_s[k0:]
+        cand = cand[e[cand] <= right[i]]
+        rows.append(np.full(len(cand), i))
+        cols.append(cand)
+    rows = np.concatenate(rows)
+    cols = np.concatenate(cols)
+    alpha = sparse.csr_matrix((np.ones(len(rows)), (rows, cols)), shape=(n, m))
 
-    for iteration in range(max_iter):
-        p_prev = p.copy()
+    if np.any(np.diff(alpha.indptr) == 0):
+        raise ValueError("Internal error: an observation contains no innermost interval.")
 
-        # E-step
-        denom = alpha @ p # (N,)
-        denom[denom == 0] = 1e-100 # Safety
-
-        # Contribution
-        contrib = alpha * p[None, :]
-        contrib = contrib / denom[:, None]
-
-        # M-step
-        p = np.sum(contrib, axis=0) / n
-
-        if np.max(np.abs(p - p_prev)) < tol:
+    p = np.full(m, 1.0 / m)
+    alpha_t = alpha.T.tocsr()
+    for _ in range(max_iter):
+        denom = alpha @ p                     # P(observation i)
+        p_new = p * (alpha_t @ (1.0 / denom)) / n
+        if np.max(np.abs(p_new - p)) < tol:
+            p = p_new
             break
+        p = p_new
 
+    p = p / p.sum()
     return intervals, p
+
 
 def predict_turnbull(intervals, probs, times):
     """
-    Calculates Survival Probability S(t) = P(T > t) from Turnbull estimates.
+    Survival probability S(t) = P(T > t) from Turnbull estimates.
 
-    Args:
-        intervals (array): Intervals from Turnbull EM.
-        probs (array): Probability mass for each interval.
-        times (array): Time points to evaluate S(t).
-
-    Returns:
-        array: Survival probabilities.
+    Within a non-degenerate innermost interval the NPMLE does not specify how
+    the mass is distributed. Mass on (s, e] with s >= t is counted as > t,
+    mass on a singleton [s, s] is counted when s > t; i.e. S(t) is the lower
+    envelope of the NPMLE survival curve.
     """
-    times = np.atleast_1d(times)
-    surv = np.zeros_like(times, dtype=float)
-
+    times = np.atleast_1d(np.asarray(times, dtype=float))
     starts = intervals[:, 0]
     ends = intervals[:, 1]
-
-    # Intervals are either [s, s] or (s, e).
-    # Logic:
-    # 1. Singleton [s, s]: Include mass if s > t.
-    # 2. Open Interval (s, e): All values > s. So if s >= t, entire interval > t.
-
-    is_singleton = (starts == ends)
-
+    is_singleton = starts == ends
+    surv = np.empty(len(times))
     for i, t in enumerate(times):
-        # Case 1: Singletons. Include if start > t.
-        mask_single = is_singleton & (starts > t)
-
-        # Case 2: Open Intervals (start, end). Include if start >= t.
-        # because if start == t, interval is (t, end), all values > t.
-        mask_open = (~is_singleton) & (starts >= t)
-
-        # Combine
-        mask = mask_single | mask_open
-
+        mask = (is_singleton & (starts > t)) | (~is_singleton & (starts >= t))
         surv[i] = np.sum(probs[mask])
-
     return surv

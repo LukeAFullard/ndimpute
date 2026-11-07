@@ -1,89 +1,84 @@
-import numpy as np
 import re
+
+import numpy as np
+
+_MISSING_STRINGS = {"", "na", "nan", "n/a", "none", "null"}
+
+
+def parse_censored(data, left_marker='<', right_marker='>'):
+    """
+    Parse values that may carry censoring markers.
+
+    Supported formats (whitespace around the marker is allowed):
+        "{left_marker}0.5"  -> left-censored at 0.5   (status -1)
+        "{right_marker}10"  -> right-censored at 10   (status  1)
+        "5", "5.", ".5", "1e-3", 5.0 -> observed      (status  0)
+        None, NaN, "", "NA", "NaN" -> missing (value NaN, status 0)
+
+    Args:
+        data (iterable): Strings and/or numbers.
+        left_marker (str): Marker for left censoring (default '<').
+        right_marker (str): Marker for right censoring (default '>').
+
+    Returns:
+        tuple: (values, status, has_left, has_right)
+            values: float array (NaN for missing).
+            status: int array, -1 left / 0 observed / 1 right.
+    """
+    if left_marker == right_marker:
+        raise ValueError("left_marker and right_marker must differ.")
+    l_esc = re.escape(left_marker)
+    r_esc = re.escape(right_marker)
+    number = r"[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?"
+    pattern = re.compile(rf"^\s*({l_esc}|{r_esc})?\s*({number})\s*$")
+
+    data = list(np.atleast_1d(np.asarray(data, dtype=object)).ravel())
+    values = np.empty(len(data), dtype=float)
+    status = np.zeros(len(data), dtype=int)
+
+    for i, item in enumerate(data):
+        if item is None:
+            values[i] = np.nan
+            continue
+        if isinstance(item, (bool, np.bool_)):
+            raise ValueError(f"Boolean value {item!r} found in values; pass censoring flags via `status`.")
+        if isinstance(item, (int, float, np.integer, np.floating)):
+            values[i] = float(item)
+            continue
+
+        s_item = str(item).strip()
+        if s_item.lower() in _MISSING_STRINGS:
+            values[i] = np.nan
+            continue
+        match = pattern.match(s_item)
+        if not match:
+            raise ValueError(f"Could not parse value: '{item}'. Expected format like "
+                             f"'{left_marker}0.5', '{right_marker}10', or '5.0'.")
+        indicator, val_str = match.group(1), match.group(2)
+        values[i] = float(val_str)
+        if indicator == left_marker:
+            status[i] = -1
+        elif indicator == right_marker:
+            status[i] = 1
+
+    return values, status, bool(np.any(status == -1)), bool(np.any(status == 1))
+
 
 def detect_and_parse(data, left_marker='<', right_marker='>'):
     """
-    Parses a list of values (strings/floats) to detect censoring indicators.
-
-    Supported formats:
-        "{left_marker} Value" -> Left Censored
-        "{right_marker} Value" -> Right Censored
-        "Value"               -> Observed
-
-    Args:
-        data (list or array): Input data containing mixed types.
-        left_marker (str): String indicating left censoring (default '<').
-        right_marker (str): String indicating right censoring (default '>').
+    Parse a list of values (strings/floats) and infer the censoring type.
 
     Returns:
         tuple: (values, status, censoring_type)
             values: Float array of limits/values.
-            status: Boolean array (Left/Right) or Int array (Mixed).
-            censoring_type: 'left', 'right', or 'mixed'.
+            status: Int array (-1/0/1) for 'mixed'; Boolean array (True =
+                censored in the direction of the type) for 'left' / 'right'.
+            censoring_type: 'left', 'right', or 'mixed'. Data with no markers
+                are reported as 'left' with no censored values.
     """
-    values = []
-    # Temporary status storage: 0=Obs, -1=Left, 1=Right
-    temp_status = []
-
-    # Regex patterns
-    # Build regex dynamically based on markers
-    # Escape markers to handle special regex characters
-    l_esc = re.escape(left_marker)
-    r_esc = re.escape(right_marker)
-
-    # Pattern: ^ [whitespace] (left|right)? [whitespace] (number) $
-    # We capture the marker group to check which one matched
-    pattern_str = f"^\\s*({l_esc}|{r_esc})?\\s*([-+]?[0-9]*\\.?[0-9]+(?:[eE][-+]?[0-9]+)?)\\s*$"
-    pattern = re.compile(pattern_str)
-
-    has_left = False
-    has_right = False
-
-    for item in data:
-        # If already a number, treat as observed
-        if isinstance(item, (int, float, np.number)):
-            values.append(float(item))
-            temp_status.append(0)
-            continue
-
-        s_item = str(item).strip()
-        match = pattern.match(s_item)
-
-        if not match:
-            # Try to handle case where marker is text like "ND" which might be separated by space
-            # The regex handles optional space.
-            raise ValueError(f"Could not parse value: '{item}'. Expected format like '{left_marker}0.5', '{right_marker}10', or '5.0'.")
-
-        indicator = match.group(1) # marker or None
-        val_str = match.group(2)
-        val = float(val_str)
-
-        values.append(val)
-
-        if indicator == left_marker:
-            temp_status.append(-1)
-            has_left = True
-        elif indicator == right_marker:
-            temp_status.append(1)
-            has_right = True
-        else:
-            temp_status.append(0)
-
-    values = np.array(values, dtype=float)
-
-    # Determine Type
+    values, status, has_left, has_right = parse_censored(data, left_marker, right_marker)
     if has_left and has_right:
-        censoring_type = 'mixed'
-        status = np.array(temp_status, dtype=int)
-    elif has_right:
-        censoring_type = 'right'
-        # For Right censoring, status is Boolean True if censored
-        # temp_status has 1 for Right. 0 for Obs.
-        status = (np.array(temp_status) == 1)
-    else:
-        # Default to 'left' if only left or no censoring found (Env standard)
-        censoring_type = 'left'
-        # temp_status has -1 for Left.
-        status = (np.array(temp_status) == -1)
-
-    return values, status, censoring_type
+        return values, status, 'mixed'
+    if has_right:
+        return values, status == 1, 'right'
+    return values, status == -1, 'left'

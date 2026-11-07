@@ -88,5 +88,5 @@ def test_auto_detect_fail():
     # Invalid string format should eventually raise ValueError
     # because status is missing and auto-detect failed.
     data = ["bad_format", "1.0"]
-    with pytest.raises(ValueError, match="Status argument is required"):
+    with pytest.raises(ValueError, match="Could not parse value"):
         impute(data)

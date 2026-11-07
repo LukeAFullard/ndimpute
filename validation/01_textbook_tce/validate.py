@@ -25,12 +25,11 @@ def run_validation():
 
     # 2. Run ndimpute
     print("Running ndimpute(method='ros')...")
-    # Use plotting_position='simple' to try to match NADA's rank/(N+1) approximation
-    # Also NADA often extrapolates without guardrails (returning predictions > limit).
-    # ndimpute enforces limit guardrails.
-    # We use impute_type='mean' to match deterministic regression line predictions more closely.
+    # Hirsch-Stedinger plotting positions + quantile imputation + no clamping
+    # is exactly NADA::ros. (NADA extrapolates above the detection limit; the
+    # ndimpute default clamp=True would cap those values.)
     df_result = impute(values, status, method='ros', censoring_type='left',
-                       plotting_position='simple', impute_type='mean')
+                       plotting_position='kaplan-meier', impute_type='quantile', clamp=False)
 
     # 3. Compare Results
     # Join with truth

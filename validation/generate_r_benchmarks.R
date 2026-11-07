@@ -37,10 +37,9 @@ obs_vals[status_left] <- lod # Replace with LOD
 # cens = TRUE if censored
 ros_model <- NADA::ros(obs_vals, status_left)
 # Modeled values (imputed)
-r_imputed_ros <- as.numeric(predict(ros_model, newdata=ros_model$modeled))
-# Note: NADA predict might behave differently depending on version.
-# ros_model$modeled usually contains the filled-in values.
-r_imputed_ros <- ros_model$modeled
+# NADA returns $modeled in SORTED order -- map back to the original row order.
+ix_sorted <- order(obs_vals)
+r_imputed_ros <- numeric(length(obs_vals)); r_imputed_ros[ix_sorted] <- ros_model$modeled
 
 export_benchmark("left_ros_lognormal", obs_vals, status_left, r_imputed_ros, "NADA::ros")
 

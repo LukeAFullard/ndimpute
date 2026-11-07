@@ -1,8 +1,9 @@
 [tool.poetry]
 name = "ndimpute"
-version = "0.1.0"
+version = "0.1.1"
 description = "A package for imputing arbitrarily censored data"
 authors = ["Luke Fullard"]
+license = "MIT"
 readme = "README.md"
 repository = "https://github.com/LukeAFullard/ndimpute"
 homepage = "https://github.com/LukeAFullard/ndimpute"

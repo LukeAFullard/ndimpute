@@ -43,22 +43,20 @@ Input Data:
 
 --- Imputation Results ---
    original_value  censoring_status  imputed_value
-0             1.0              True       1.000000
+0             1.0              True       0.843607
 1             1.0              True       1.000000
-2             5.0              True       4.724283
-3             5.0              True       3.845960
+2             5.0              True       1.329279
+3             5.0              True       2.479250
 4             2.0             False       2.000000
 5             4.0             False       4.000000
 6             6.0             False       6.000000
 7             8.0             False       8.000000
 8            10.0             False      10.000000
 
-Mean Imputed (<1): 1.0000
-Observed (2):      2.0000
-Mean Imputed (<5): 4.2851
-
-[INFO] Ordering preserved: <1  <  2.0  <  <5
-[PASS] Guardrails respected.
+Max |ndimpute(clamp=False) - NADA::ros|: 4.18e-07
+Mean Imputed (<1): 0.9218
+Mean Imputed (<5): 1.9043
+[PASS] Guardrails respected and NADA::ros reproduced.
 Saved multilimit_check.png
 ```
 
@@ -68,10 +66,10 @@ Saved multilimit_check.png
 *[Caption: Scatter plot of Original Limit vs Imputed Value. All Red crosses (Imputed) appear on or below the diagonal line, confirming guardrails are active.]*
 
 ## 8. Interpretation & Conclusion
-**Analysis:**
-The validation confirms that `ndimpute` handles multiple detection limits gracefully.
-1.  **Safety:** No imputed value exceeded its specific limit.
-2.  **Logic:** The algorithm correctly inferred that values censored at `<5.0` likely occupy the range between the lower observed values ($2.0$) and the limit ($5.0$), assigning them values ($\approx 4.3$) significantly higher than those censored at `<1.0`. This demonstrates that the sorting/ranking logic preserves the relative information content of varying detection limits.
+**Analysis (re-run with the corrected Hirsch–Stedinger ROS):**
+1.  **Parity:** with `clamp=False`, the imputations equal `NADA::ros` (R, NADA 1.6-1.1) for these data, to the six-decimal rounding of the reference: 0.8436, 1.3293 (`<1`) and 1.3293, 2.4793 (`<5`).
+2.  **Safety:** no imputed value exceeds its limit. With the default `clamp=True`, the second `<1` value (1.329 in NADA) is capped at 1.0.
+3.  **Interpretation:** a `<5` value only means "below 5". Hirsch–Stedinger estimates P(X < 5) ≈ 0.67 from the data and spreads the two `<5` values across the lower part of the distribution below that probability, which overlaps the `<1` values and the detect at 2. The earlier report's expectation that `<5` must lie between 2 and 5 (≈ 4.3) came from the old, incorrect plotting positions; it is not a property of ROS.
 
 **Pass/Fail Status:**
 - [x] **PASS**

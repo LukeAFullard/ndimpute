@@ -38,7 +38,10 @@ def run_suite():
 
         # Run ndimpute with correct distribution!
         try:
-            df_py = impute(values, status, method='ros', censoring_type='left', dist=dist)
+            # NADA-equivalent configuration: Hirsch-Stedinger positions, quantile
+            # imputation, no clamping at the detection limit.
+            df_py = impute(values, status, method='ros', censoring_type='left', dist=dist,
+                           plotting_position='kaplan-meier', impute_type='quantile', clamp=False)
             py_imputed = df_py['imputed_value'].values
 
             # Compare (Censored only)
@@ -47,6 +50,7 @@ def run_suite():
                 mae = 0.0
             else:
                 mae = np.mean(np.abs(py_imputed[mask] - r_imputed[mask]))
+            max_diff = float(np.max(np.abs(py_imputed - r_imputed)))
 
             results.append({
                 'Scenario': filename,
@@ -54,9 +58,10 @@ def run_suite():
                 'N': len(values),
                 'Limit': limit_type,
                 'MAE': mae,
-                'Status': 'PASS' # We just record metrics for now
+                'MaxAbsDiff': max_diff,
+                'Status': 'PASS' if max_diff < 1e-8 else 'FAIL'
             })
-            print(f"Processed {filename} (dist={dist}): MAE={mae:.4f}")
+            print(f"Processed {filename} (dist={dist}): MAE={mae:.2e}, max|diff|={max_diff:.2e}")
 
         except Exception as e:
             print(f"Failed {filename}: {e}")
@@ -71,8 +76,11 @@ def run_suite():
     print(df_res.to_string())
 
     # Export results
-    df_res.to_csv("suite_results_v2.csv", index=False)
-    print("\nSaved suite_results_v2.csv")
+    df_res.to_csv("suite_results.csv", index=False)
+    print("\nSaved suite_results.csv")
+    n_fail = int((df_res['Status'] != 'PASS').sum())
+    print(f"\n[{'PASS' if n_fail == 0 else 'FAIL'}] {len(df_res) - n_fail}/{len(df_res)} "
+          "datasets match NADA::ros to 1e-8.")
 
 if __name__ == "__main__":
     run_suite()

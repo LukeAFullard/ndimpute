@@ -40,7 +40,7 @@ True Conditional Mean (>60): 76.7735
 
 --- Results (Bias) ---
 Parametric (Weibull): -0.0532
-Reverse ROS:          36.8453
+Reverse ROS:          37.0601
 Substitution (C):     -16.7735
 Saved method_comparison.png
 
@@ -57,7 +57,7 @@ Saved method_comparison.png
 **Analysis:**
 The **Parametric method** is the clear winner for Right-Censored Weibull data, with negligible bias ($-0.05$).
 **Substitution** leads to significant underestimation ($-16.77$), confirming the need for proper imputation.
-**Reverse ROS** resulted in massive overestimation ($+36.84$). This demonstrates that the heuristic of inverting data and assuming lognormality is dangerous when the underlying distribution is Weibull (Inverse Weibull is Fréchet, which has much heavier tails than Lognormal).
+**Reverse ROS** resulted in massive overestimation ($+37.06$; $+36.85$ before the plotting-position fix). This demonstrates that the heuristic of inverting data and assuming lognormality is dangerous when the underlying distribution is Weibull (Inverse Weibull is Fréchet, which has much heavier tails than Lognormal).
 
 **Recommendation:** Users should strictly prefer `method='parametric'` for reliability data unless they have specific evidence that the reciprocal of time-to-failure is Lognormally distributed.
 

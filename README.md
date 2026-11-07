@@ -15,17 +15,23 @@ This package implements rigorous statistical methods—Robust ROS and Parametric
 
 Simple substitution (replacing values below the **Limit of Detection (LOD)** with `LOD/2` or `0`) destroys the variance of your dataset and biases mean estimates, especially for lognormal data.
 
-| Method | Mean Error (Bias) | Standard Deviation Error |
+Monte Carlo, lognormal data, n = 200, ~60 % censored, three detection limits ([`validation/12_monte_carlo`](https://github.com/LukeAFullard/ndimpute/blob/main/validation/12_monte_carlo)):
+
+| Method | Bias in mean of logs | Bias in SD of logs |
 | :--- | :--- | :--- |
-| **Substitution (LOD/2)** | **-15% to +20%** | **Severely Biased** |
-| **ndimpute (ROS)** | **< 1%** | **< 2%** |
+| **Substitution (LOD/2)** | +0.197 | −0.209 |
+| **ndimpute ROS (default)** | +0.003 | −0.016 |
+| **ndimpute parametric (stochastic)** | −0.002 | +0.000 |
+
+(True values: 0 and 1.)
 
 ## Key Features
 
-*   **Robust ROS (Regression on Order Statistics):** Uses Kaplan-Meier plotting positions (handling multiple detection limits) to fit a regression line to the observed data and impute censored values based on their probability.
-*   **Parametric Imputation:** MLE-based imputation (Weibull, Lognormal, Normal) for reliability and mixed-censoring analysis.
-*   **Interval Censoring:** Handles data known only to lie within a range (e.g., `[5, 10]`) using the **Turnbull Estimator**.
-*   **Production-Ready:** Validated against R industry standards (`NADA`, `survival`) and fully vectorized for performance ($N > 100k$).
+*   **Robust ROS (Regression on Order Statistics):** Hirsch–Stedinger plotting positions for any number of detection limits. Reproduces `NADA::ros` exactly (validated in R).
+*   **Parametric MLE imputation:** Lognormal, Normal and Weibull fits to the full censored likelihood for left, right, mixed and interval censoring. Validated against `survival::survreg`. Conditional means and truncated draws are numerically stable in the far tails.
+*   **LWPTrends-compatible mixed censoring:** the `Impute.lower` + `Impute.upper` procedure, with an exact compatibility mode (`lwp_compat=True`).
+*   **Interval censoring:** parametric MLE, or Turnbull-NPMLE-based ROS (exploratory).
+*   **Safe input handling:** parses `"<0.5"` / `">10"` strings and LWPTrends `CenType` codes (`'lt'`, `'gt'`, `'not'`); passes missing values through; raises on ambiguous or conflicting censoring information instead of guessing.
 
 ## Installation
 
@@ -48,18 +54,20 @@ If you already have your data as numeric arrays and a boolean mask, this is the 
 import numpy as np
 from ndimpute import impute
 
-# Data: 10.0, 0.5 (censored), 5.0
-values = np.array([10.0, 0.5, 5.0])
-is_censored = np.array([False, True, False])
+# Ten samples; three are non-detects reported at the LOD of 0.5
+values = np.array([0.5, 1.2, 0.5, 2.3, 3.1, 0.5, 4.8, 7.5, 1.9, 12.0])
+is_censored = np.array([1, 0, 1, 0, 0, 1, 0, 0, 0, 0], dtype=bool)
 
-# Robust ROS (Default for Left Censoring)
+# Robust ROS (default). A boolean / 0-1 status means LEFT censoring ("<LOD").
 df = impute(values, status=is_censored, method='ros')
 
-print(df[['original_value', 'imputed_value']])
-#   original_value  imputed_value
-# 0           10.0      10.000000
-# 1            0.5       0.234...  <-- Imputed below 0.5
-# 2            5.0       5.000000
+print(df[['original_value', 'imputed_value']].round(3))
+#    original_value  imputed_value
+# 0             0.5          0.254   <-- imputed from the fitted lognormal line
+# 1             1.2          1.200
+# 2             0.5          0.446
+# ...
+# 5             0.5          0.500   <-- line predicts > LOD; capped (clamp=True)
 ```
 
 ### 2. Auto-Detect from Strings
@@ -80,10 +88,23 @@ df = impute(data, method='parametric', dist='lognormal')
 
 | Data Type | Censoring | Recommended Method | Why? |
 | :--- | :--- | :--- | :--- |
-| **Environmental** | Left (`<LOD`) | `method='ros'` | Robust to outliers; standard in environmental science. |
-| **Reliability** | Right (`>Time`) | `method='parametric'` | Reliability data usually follows physical laws (Weibull). |
-| **Mixed** | Left & Right | `method='parametric'` | ROS for mixed data is biased (~14% error); MLE is consistent. |
-| **Interval** | Interval `[L, R]` | `method='ros'` | Uses Turnbull estimator to handle arbitrary intervals. |
+| **Environmental** | Left (`<LOD`) | `method='ros'` | Standard in environmental science (Helsel 2012); robust to distributional misfit of the detects. |
+| **Reliability** | Right (`>Time`) | `method='parametric'` | Survival data usually follow a parametric law (e.g. Weibull). |
+| **Mixed** | Left & Right | `method='parametric'` | One coherent likelihood for both tails. Use `method='ros', lwp_compat=True` to reproduce LWPTrends. |
+| **Interval** | Interval `[L, R]` | `method='parametric'` | Exact interval-censored likelihood. |
+
+**Key options**
+
+| Option | Values |
+| :--- | :--- |
+| `dist` | `'lognormal'` (default), `'normal'`, `'weibull'` (parametric), `'auto'` |
+| `impute_type` | ROS: `'quantile'` (default, NADA), `'stochastic'`, `'mean'`. Parametric: `'mean'` (default), `'stochastic'` |
+| `random_state` | Seed for stochastic imputation |
+| `clamp` | ROS: cap imputations at their detection limit (default `True`; `False` reproduces NADA exactly) |
+| `mixed_strategy` | Mixed ROS: `'sequential'` (default, LWPTrends) or `'turnbull'` (experimental) |
+| `lwp_compat` | Mixed ROS: reproduce LWPTrends v2502 exactly, including its fall-back rules |
+
+`df.attrs` records the method, censoring type, distribution and fit details for provenance.
 
 **Code Example Guide:**
 
@@ -108,16 +129,17 @@ For deep dives into the algorithms (Kaplan-Meier, Turnbull, MLE), see [STATISTIC
 
 ## Limitations
 
-*   **Minimum Observations:** ROS requires at least 2 uncensored observations to fit a regression line.
-*   **Mixed Censoring Bias in ROS:** While supported, using ROS for mixed censoring is less accurate than parametric methods. We recommend `method='parametric'` for mixed data.
-*   **Double Censoring:** The package does not currently support specific "double censoring" models (e.g., interval-censored starting time AND interval-censored ending time) often found in incubation period studies.
+*   **Minimum data:** ROS needs at least 2 distinct detects (a warning is issued below 5, and when more than 80 % of values are censored). Parametric fits need at least 2 exact or finite-interval values.
+*   **Uncertainty:** imputations condition on fitted parameters. Repeating stochastic imputation with different seeds is *not* proper multiple imputation, and standard errors computed from imputed data are too small. See [STATISTICAL_METHODS.md §7](https://github.com/LukeAFullard/ndimpute/blob/main/STATISTICAL_METHODS.md).
+*   **Mixed ROS** is a sequential approximation (it is the LWPTrends procedure); for inference prefer `method='parametric'`. The Turnbull-based ROS variants are exploratory.
+*   **Double censoring** (e.g. interval-censored start *and* end times) is not supported.
 
 ## Validation
 
-This package is tested against:
-*   **R NADA Package:** Matches results for single detection limits.
-*   **R Survival Package:** Matches Kaplan-Meier and Turnbull estimations.
-*   **NADA 2:** Uses improved Kaplan-Meier plotting positions for multiple detection limits (superior to legacy NADA's simple ranking).
+*   **R `NADA::ros` (1.6-1.1):** identical plotting positions and imputations (difference < 1e-10) on 60 datasets, including multiple detection limits and normal-scale ROS ([`validation/11_r_parity`](https://github.com/LukeAFullard/ndimpute/blob/main/validation/11_r_parity)).
+*   **R `survival::survreg`:** identical MLE parameters and log-likelihoods for Weibull, lognormal and normal under right, left, mixed and interval censoring; conditional means agree with numerical integration in R.
+*   **Monte Carlo:** bias and RMSE of every method over 1,000 replicates per scenario ([`validation/12_monte_carlo`](https://github.com/LukeAFullard/ndimpute/blob/main/validation/12_monte_carlo)).
+*   The R reference data are committed; `pytest` checks parity without needing R.
 
 ## License
 

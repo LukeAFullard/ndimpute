@@ -1,6 +1,6 @@
 # Validation Report: Auto-Detect API
 
-**Date:** 2025-02-12
+**Date:** 2025-02-12 (re-run 2026-11-06 against v0.1.1: all 4 cases PASS)
 **Status:** PASSED
 
 ## Summary

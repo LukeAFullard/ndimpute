@@ -34,11 +34,11 @@ Distribution: Lognormal(mean=2, sigma=1), N=50, Censoring=30.0%
 
 --- Validation Results ---
 Substitution (LOD/2) RMSE: 2.2498
-Robust ROS RMSE:           2.2185
-Improvement Factor:        1.01x
+Robust ROS RMSE:           2.2116
+Improvement Factor:        1.02x
 
 Substitution Mean Bias:    -0.1508
-Robust ROS Mean Bias:      -0.0016
+Robust ROS Mean Bias:      -0.0750
 Saved bias_distribution.png
 
 [PASS] ROS outperforms Substitution.
@@ -50,12 +50,10 @@ Saved bias_distribution.png
 *[Caption: Histogram of bias for 1000 simulations. The ROS distribution (Blue) is centered almost perfectly at 0, whereas Substitution (Red) shows a clear negative shift.]*
 
 ## 8. Interpretation & Conclusion
-**Analysis:**
-The Monte Carlo simulation confirms the statistical superiority of the ROS method implemented in `ndimpute`.
-- **Bias:** Substitution (LOD/2) consistently underestimates the true mean (Bias $\approx -0.15$), whereas ROS is unbiased (Bias $\approx 0.00$).
-- **RMSE:** ROS provides a slight improvement in overall error reduction.
-
-This validation proves that for lognormal data with moderate censoring (30%), `ndimpute`'s ROS implementation correctly recovers the population mean, fulfilling the statistical requirement for robust environmental data analysis.
+**Analysis (re-run with the corrected Hirsch–Stedinger ROS):**
+- **Bias:** substitution (LOD/2) under-estimates the true mean of 12.18 by −0.15 (−1.2 %). ROS is off by −0.075 (−0.6 %), which is about one Monte Carlo standard error (RMSE / √1000 ≈ 0.07), so it is statistically indistinguishable from zero.
+- **RMSE:** ROS is slightly better (2.21 vs 2.25). At n = 50 with 30 % censoring, sampling variability dominates both methods.
+- The earlier figure of −0.0016 came from the pre-fix plotting positions; it was not evidence of a better method. For a full bias/RMSE study, including SDs and multiple detection limits (where substitution's bias is much larger), see `validation/12_monte_carlo`.
 
 **Pass/Fail Status:**
 - [x] **PASS**

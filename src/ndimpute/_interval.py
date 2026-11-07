@@ -1,196 +1,143 @@
-import numpy as np
-from scipy.stats import norm, linregress
-from ._turnbull import turnbull_em, predict_turnbull
+"""
+Imputation for interval-censored data.
 
-def impute_interval_ros(left, right, dist='lognormal', impute_type='stochastic', random_state=None, return_fit=False):
+Two approaches are provided:
+
+* ``impute_interval_parametric`` (recommended): maximum-likelihood fit of a
+  parametric distribution to the interval-censored likelihood, then
+  conditional means / truncated draws within each interval.
+* ``impute_interval_ros``: a semi-parametric probability-plot method. The
+  Turnbull NPMLE supplies cumulative probabilities for its innermost
+  intervals; a weighted least-squares line is fitted through
+  (normal quantile of the mid-cumulative probability, interval midpoint), and
+  the line's (mu, sigma) are used to impute within each observation's bounds.
+  This generalises ROS to interval data but, unlike ROS for left-censored
+  data, it is not an established published estimator; treat it as
+  exploratory and prefer the parametric method for inference.
+"""
+
+import numpy as np
+from scipy.stats import norm
+
+from ._turnbull import turnbull_em
+from ._truncated import (
+    norm_trunc_mean, norm_trunc_sample, lognorm_trunc_mean, lognorm_trunc_sample,
+)
+from ._parametric import impute_parametric_bounds
+
+
+def _validate_bounds(left, right, dist):
+    left = np.asarray(left, dtype=float)
+    right = np.asarray(right, dtype=float)
+    if left.shape != right.shape:
+        raise ValueError("left and right bounds must have the same shape.")
+    if np.any(np.isnan(left)) or np.any(np.isnan(right)):
+        raise ValueError("Interval bounds contain NaN.")
+    if np.any(left > right):
+        raise ValueError("Interval lower bounds must not exceed upper bounds.")
+    if dist in ('lognormal', 'weibull'):
+        if np.any(right <= 0):
+            raise ValueError(f"Upper bounds must be positive for {dist} distribution.")
+        exact = left == right
+        if np.any(left[exact] <= 0):
+            raise ValueError(f"Exact values must be positive for {dist} distribution.")
+        left = np.where(left < 0, 0.0, left)  # (-inf, R] == [0, R] for a positive variable
+    return left, right
+
+
+def impute_interval_parametric(left, right, dist='lognormal', impute_type='mean', random_state=None,
+                               return_fit=False):
     """
-    Imputes interval-censored data using ROS with plotting positions derived
-    from the Turnbull Estimator.
+    Parametric MLE imputation for interval-censored data.
+
+    Args:
+        left, right (array): Bounds; left == right for exact values, left = -inf
+            (or 0 for positive distributions) for left-censored, right = inf for
+            right-censored.
+        dist (str): 'lognormal', 'normal' or 'weibull'.
+        impute_type (str): 'mean' or 'stochastic'.
+        random_state: Seed for 'stochastic'.
+        return_fit (bool): If True, returns (imputed, fit_dict).
+    """
+    left, right = _validate_bounds(left, right, dist)
+    return impute_parametric_bounds(left, right, dist=dist, impute_type=impute_type,
+                                    random_state=random_state, return_fit=return_fit)
+
+
+def impute_interval_ros(left, right, dist='lognormal', impute_type='stochastic', random_state=None,
+                        return_fit=False):
+    """
+    Turnbull-based probability-plot imputation for interval-censored data.
 
     Args:
         left (array): Lower bounds.
         right (array): Upper bounds.
         dist (str): 'lognormal' or 'normal'.
-        impute_type (str): 'stochastic' (default) or 'mean'.
-            - 'mean': Imputes the conditional mean of the interval (reduces variance).
-            - 'stochastic': Randomly samples from the truncated distribution within the interval.
-              This preserves variance for large datasets.
-        random_state (int, np.random.Generator, optional): Seed or generator for stochastic imputation.
+        impute_type (str): 'stochastic' (default; random draw within the
+            interval from the fitted distribution) or 'mean' (conditional mean
+            within the interval, on the original scale).
+        random_state (int, np.random.Generator, optional): Seed for 'stochastic'.
         return_fit (bool): If True, returns (imputed_values, r_squared).
     """
-    left = np.array(left)
-    right = np.array(right)
-
-    if dist not in ['normal', 'lognormal']:
+    if dist not in ('normal', 'lognormal'):
         raise ValueError(f"Unknown distribution '{dist}'. Supported: 'normal', 'lognormal'.")
+    if impute_type not in ('stochastic', 'mean'):
+        raise ValueError(f"Unknown impute_type '{impute_type}' for interval ROS. Options: 'stochastic', 'mean'.")
+    left, right = _validate_bounds(left, right, dist)
 
-    # 1. Turnbull Estimator
+    # 1. Turnbull NPMLE
     intervals, probs = turnbull_em(left, right)
 
-    if len(probs) == 0:
-        raise ValueError("Turnbull estimator failed to find valid intervals.")
-
-    # 2. Calculate Plotting Positions
-    # Fit regression to Turnbull CDF points
-    if dist == 'lognormal':
-        # Geometric mean for lognormal midpoint
-        # For interval (L, R), mid = sqrt(L*R).
-        # We must ensure L > 0. If L=0, geometric mean is 0.
-
-        mids = np.sqrt(intervals[:, 0] * intervals[:, 1])
-    else:
-        mids = np.mean(intervals, axis=1)
-
-    # Cumulative Probabilities
+    # 2. Plotting positions: mid-cumulative probability of each innermost interval
     cdf_vals = np.cumsum(probs)
-    pp_turnbull = cdf_vals - (probs / 2.0)
+    pp = np.clip(cdf_vals - probs / 2.0, 1e-12, 1 - 1e-12)
+    z = norm.ppf(pp)
 
-    # Handle P=0 or P=1 edge cases if any
-    pp_turnbull = np.clip(pp_turnbull, 1e-9, 1 - 1e-9)
-
-    z_turnbull = norm.ppf(pp_turnbull)
-
-    if dist == 'lognormal':
-        # Handle non-positive midpoints if any (though Turnbull intervals should be within obs range)
-        # If mid <= 0, we can't take log.
-        valid_mids = mids > 0
-        if not np.any(valid_mids):
-             raise ValueError("Intervals must be positive for lognormal distribution.")
-
-        y_fit = np.log(mids[valid_mids])
-        z_fit = z_turnbull[valid_mids]
-        weights = probs[valid_mids]
-    else:
-        # Filter infinite midpoints (e.g., from -inf lower bound in mixed censoring)
-        valid_mids = np.isfinite(mids)
-        if not np.any(valid_mids):
-             # Should be rare unless all data is fully censored to infinity
-             raise ValueError("No finite intervals available for normal distribution fit.")
-
-        y_fit = mids[valid_mids]
-        z_fit = z_turnbull[valid_mids]
-        weights = probs[valid_mids]
-
-    # Ensure we have enough points with weight > 0
-    mask_w = weights > 1e-9
-    y_fit = y_fit[mask_w]
-    z_fit = z_fit[mask_w]
-    weights = weights[mask_w]
-
-    if len(y_fit) < 2:
-        # Not enough points to fit regression line
-        raise ValueError("Turnbull yielded insufficient intervals (points) to fit regression.")
-
-    # Weighted OLS
-    w_mean_x = np.average(z_fit, weights=weights)
-    w_mean_y = np.average(y_fit, weights=weights)
-
-    numerator = np.sum(weights * (z_fit - w_mean_x) * (y_fit - w_mean_y))
-    denominator = np.sum(weights * (z_fit - w_mean_x)**2)
-
-    # Calculate R-squared for weighted regression
-    # R^2 = (S_zy / sqrt(S_zz * S_yy))^2
-    # numerator is S_zy
-    # denominator is S_zz
-    s_yy = np.sum(weights * (y_fit - w_mean_y)**2)
-
-    if denominator < 1e-12 or s_yy < 1e-12:
-        # Variance of Z or Y is zero.
-        slope = 0.0
-        r_squared = 0.0
-    else:
-        slope = numerator / denominator
-        r_squared = (numerator / np.sqrt(denominator * s_yy))**2
-
-    intercept = w_mean_y - slope * w_mean_x
-
-    # 3. Impute
-    mu_model = intercept
-    sigma_model = slope
-
-    imputed = np.zeros_like(left, dtype=float)
-
-    # Pre-generate random noise for stochastic
-    if impute_type == 'stochastic':
-        rng = np.random.default_rng(random_state)
-        # Use uniform noise U[0, 1] to sample from truncated CDF
-        u_noise = rng.uniform(0, 1, size=len(left))
-
-    for i in range(len(left)):
-        l_i, r_i = left[i], right[i]
-
-        # Transform bounds to Z-space
-        # If sigma is 0, we can't divide.
-        if abs(sigma_model) < 1e-12:
-             if dist == 'lognormal':
-                imputed[i] = np.exp(mu_model)
-             else:
-                imputed[i] = mu_model
-             continue
-
+    s, e = intervals[:, 0], intervals[:, 1]
+    with np.errstate(invalid='ignore', divide='ignore'):
         if dist == 'lognormal':
-            with np.errstate(divide='ignore'):
-                z_l = (np.log(l_i) - mu_model) / sigma_model if l_i > 0 else -np.inf
-                z_r = (np.log(r_i) - mu_model) / sigma_model if not np.isinf(r_i) else np.inf
+            mids = np.sqrt(s * e)  # geometric midpoint
+            y = np.log(mids)
         else:
-            z_l = (l_i - mu_model) / sigma_model
-            z_r = (r_i - mu_model) / sigma_model if not np.isinf(r_i) else np.inf
+            mids = 0.5 * (s + e)
+            y = mids
+    valid = np.isfinite(y) & (probs > 1e-12)
+    if np.sum(valid) < 2:
+        raise ValueError("Turnbull yielded insufficient finite intervals (points) to fit regression.")
 
-        # Ensure z_l < z_r
-        if sigma_model < 0:
-             z_l, z_r = z_r, z_l
+    y_fit, z_fit, w = y[valid], z[valid], probs[valid]
 
-        # Calculate Z value
-        Phi_a = norm.cdf(z_l)
-        Phi_b = norm.cdf(z_r) if not np.isinf(z_r) else 1.0
+    # 3. Weighted least squares
+    zm = np.average(z_fit, weights=w)
+    ym = np.average(y_fit, weights=w)
+    s_zy = np.sum(w * (z_fit - zm) * (y_fit - ym))
+    s_zz = np.sum(w * (z_fit - zm) ** 2)
+    s_yy = np.sum(w * (y_fit - ym) ** 2)
+    if s_zz <= 0 or s_yy <= 0:
+        raise ValueError("Degenerate probability plot (no spread); interval ROS cannot be fitted.")
+    slope = s_zy / s_zz
+    intercept = ym - slope * zm
+    r_squared = s_zy ** 2 / (s_zz * s_yy)
+    if not slope > 0:
+        raise ValueError("Interval ROS regression has non-positive slope; the model is invalid for these data.")
 
-        if impute_type == 'mean':
-            phi_a = norm.pdf(z_l)
-            phi_b = norm.pdf(z_r) if not np.isinf(z_r) else 0.0
-            denom = Phi_b - Phi_a
-
-            if denom < 1e-9:
-                # Interval is extremely far in tail or tiny (e.g. singleton).
-                e_z = (z_l + z_r) / 2 if not np.isinf(z_r) and not np.isinf(z_l) else z_l
+    # 4. Impute within each observation's bounds using (mu, sigma) = (intercept, slope)
+    imputed = left.copy()
+    cens = left != right
+    if np.any(cens):
+        lo, hi = left[cens], right[cens]
+        if impute_type == 'stochastic':
+            rng = np.random.default_rng(random_state)
+            u = rng.uniform(size=int(np.sum(cens)))
+            if dist == 'lognormal':
+                imputed[cens] = lognorm_trunc_sample(intercept, slope, lo, hi, u)
             else:
-                e_z = (phi_a - phi_b) / denom
-
-            z_final = e_z
-
-        else: # stochastic
-            # Sample Z from Truncated Normal
-
-            # Clip Phi values slightly to avoid inf
-            Phi_a = np.clip(Phi_a, 1e-15, 1 - 1e-15)
-            Phi_b = np.clip(Phi_b, 1e-15, 1 - 1e-15)
-
-            # If interval is tiny (singleton), Phi_a ~ Phi_b.
-            if (Phi_b - Phi_a) < 1e-9:
-                 z_final = z_l
-            else:
-                # Map U[0,1] to U[Phi_a, Phi_b]
-                u_mapped = Phi_a + u_noise[i] * (Phi_b - Phi_a)
-                z_final = norm.ppf(u_mapped)
-
-        # Back transform
-        pred_val = mu_model + sigma_model * z_final
-
-        if dist == 'lognormal':
-            imputed[i] = np.exp(pred_val)
+                imputed[cens] = norm_trunc_sample(intercept, slope, lo, hi, u)
         else:
-            imputed[i] = pred_val
-
-        # Clamp to bounds to ensure numerical precision didn't violate constraints
-        # Especially important for stochastic sampling near edges
-        if not np.isinf(l_i):
-            imputed[i] = max(imputed[i], l_i)
-        if not np.isinf(r_i):
-            imputed[i] = min(imputed[i], r_i)
-
-    # Explicitly preserve exact observations to avoid floating point drift
-    # where left == right
-    mask_exact = (left == right)
-    imputed[mask_exact] = left[mask_exact]
+            if dist == 'lognormal':
+                imputed[cens] = lognorm_trunc_mean(intercept, slope, lo, hi)
+            else:
+                imputed[cens] = norm_trunc_mean(intercept, slope, lo, hi)
 
     if return_fit:
         return imputed, r_squared

@@ -5,7 +5,7 @@ import os
 
 def analyze():
     # Read the V2 results from the latest run
-    df = pd.read_csv("suite_results_v2.csv")
+    df = pd.read_csv("suite_results.csv")
 
     # 1. Summary Table
     summary = df.groupby(['Dist', 'Limit'])['MAE'].mean().reset_index()

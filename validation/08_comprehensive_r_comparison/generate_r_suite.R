@@ -59,12 +59,24 @@ generate_dataset <- function(dist, n, cens_level, limit_type) {
   # forwardT="log" is default. forwardT="identity" for Normal?
   # NADA documentation says: "forwardT: transformation to apply... default is 'log'"
 
-  transform <- if (dist == "lognormal") "log" else "identity"
+  # forwardT/reverseT must BOTH be NULL for untransformed (normal) ROS; passing
+  # only forwardT = "identity" leaves reverseT = "exp" and exponentiates the fit.
+  ft <- if (dist == "lognormal") "log" else NULL
+  rt <- if (dist == "lognormal") "exp" else NULL
+
+  # NADA silently DROPS censored values above the largest detect, which would
+  # misalign its output with the input rows. Skip such datasets.
+  if (sum(!cens_status) < 2 || any(obs_vals[cens_status] > max(obs_vals[!cens_status]))) {
+    cat(paste("Skipping scenario (NADA would drop rows):", dist, n, cens_level, limit_type, "\n"))
+    return(invisible(NULL))
+  }
 
   # Catch errors (e.g. if too few uncensored)
   tryCatch({
-    ros_model <- NADA::ros(obs_vals, cens_status, forwardT = transform)
-    r_imputed <- ros_model$modeled
+    ros_model <- suppressWarnings(NADA::ros(obs_vals, cens_status, forwardT = ft, reverseT = rt))
+    # NADA returns $modeled in SORTED order -- map back to the original row order.
+    ix_sorted <- order(obs_vals)
+    r_imputed <- numeric(length(obs_vals)); r_imputed[ix_sorted] <- ros_model$modeled
 
     # 4. Export
     filename <- paste0("benchmark_", dist, "_n", n, "_cens", cens_level, "_", limit_type, ".csv")

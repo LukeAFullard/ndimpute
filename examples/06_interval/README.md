@@ -18,6 +18,12 @@ Interval censoring occurs when the exact value of an observation is not known, b
 3.  Fitting a **Regression on Order Statistics (ROS)** model (Lognormal or Normal) to these points.
 4.  Imputing values by sampling from the fitted distribution, truncated to the specific interval of each observation.
 
+> **Which method?** Turnbull ROS is a semi-parametric, exploratory generalisation of ROS; it is not an established published estimator. For inference, prefer `method='parametric'`, which maximises the exact interval-censored likelihood (validated against `survival::survreg`) and imputes conditional means or truncated draws within each interval:
+>
+> ```python
+> df = impute(bounds, censoring_type='interval', method='parametric', dist='lognormal')
+> ```
+
 ## Usage
 
 Pass an `(N, 2)` array of bounds to `impute` with `censoring_type='interval'`.

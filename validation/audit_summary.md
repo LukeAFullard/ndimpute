@@ -1,49 +1,24 @@
-# Validation Audit Summary & Roadmap
+# Validation Summary
 
-**Date:** Oct 26, 2023
-**Package:** `ndimpute`
-**Version:** 0.2.0
+**Re-run:** 2026-11-06, ndimpute 0.1.1 (after the statistical audit; see `CHANGELOG.md`).
+**Reference software:** R with NADA 1.6-1.1, survival, and LWPTrends v2502 (`Impute.lower`).
 
-## 1. Executive Summary
-
-The `ndimpute` package has undergone a comprehensive validation audit consisting of 8 distinct test scenarios, ranging from textbook environmental examples to large-scale Monte Carlo simulations. The audit confirms that `ndimpute` is **statistically robust, highly performant, and safe for production use** within its intended scopes:
-1.  **Environmental Data:** Lognormal/Normal data with single or multiple detection limits (ROS).
-2.  **Reliability Data:** Weibull data with right censoring (Parametric).
-
-Recent updates (Version 0.2.0) have optimized performance via vectorization, expanded support to Normal distributions, and upgraded the ROS engine to use **Hirsch-Stedinger (Kaplan-Meier)** plotting positions, ensuring robustness for complex multi-limit datasets.
-
-## 2. Key Findings by Scenario
-
-| Case | Scenario | Status | Key Finding |
+| Case | Scenario | Status | Key finding (re-run) |
 | :--- | :--- | :--- | :--- |
-| **01** | **Textbook TCE** | **Functional** | ROS respects detection limits (Guardrails active). |
-| **02** | **Monte Carlo (Left)** | **PASS** | **Major Success.** Robust ROS demonstrated negligible bias ($\approx 0.00$) compared to significant bias in Substitution ($\approx -0.15$). Proves statistical superiority. |
-| **03** | **Reliability (Right)** | **PASS** | **Major Success.** Parametric Weibull imputation recovered the true conditional mean with $< 0.1\%$ error. |
-| **04** | **Mixed Stress** | **PASS** | Parametric Mixed imputation is accurate ($\sim 1.5\%$ bias). Heuristic Mixed ROS is approximate ($\sim 14\%$ bias) and should be used with caution. |
-| **05** | **Edge Cases** | **PASS** | Package is stable. Handles 95% censoring without crashing. Correctly identifies invalid inputs (negative values, insufficient data). |
-| **06** | **Comparative (Right)** | **PASS** | Confirmed Parametric > Substitution > Reverse ROS for Weibull data. Reverse ROS risks overestimation for heavy-tailed data. |
-| **07** | **Multiple Limits** | **PASS** | Logic handles intermingled limits ($<1, <5$) correctly. The upgraded Kaplan-Meier logic ensures that values censored at higher limits are imputed logically relative to observed values. |
-| **08** | **Comprehensive Sweep** | **PASS** | **Excellent accuracy for both Lognormal and Normal distributions.** The implementation allows toggling between 'kaplan-meier' (Advanced) and 'simple' (Legacy) plotting positions for backward compatibility. |
+| 01 | Textbook TCE | PASS | Matches genuine `NADA::ros` output exactly (the old `truth.csv` was not NADA output; regenerated). |
+| 02 | Monte Carlo, left, n = 50 | PASS | Mean bias: ROS −0.075 (−0.6 %, ≈ 1 MC s.e.); LOD/2 −0.151 (−1.2 %). |
+| 03 | Weibull reliability (right) | PASS | Parametric conditional mean within −0.07 % of the analytical value. |
+| 04 | Mixed stress (Weibull data) | PASS | Parametric +1.6 %. Mixed ROS +14 % with the default lognormal assumption; +1.5 % with `right_dist='weibull'`. The bias is from misspecification, not the procedure. |
+| 05 | Edge cases | PASS | 95 % censoring, N = 3, insufficient detects, 100 % censoring and negative data are all handled or rejected with clear errors. |
+| 06 | Comparative right | PASS | Parametric −0.05; substitution −16.8; reverse lognormal ROS on Weibull data +37 (misspecified). |
+| 07 | Multiple limits | PASS | Matches `NADA::ros`; the old "`<5` must exceed 2" expectation was an artefact of the old plotting positions. |
+| 08 | NADA sweep (36 scenarios) | PASS | 31/31 usable datasets match `NADA::ros` to < 1e-13 (now real R output; script bugs fixed). |
+| 09 | Interval (Turnbull ROS) | PASS | 100 % of imputations inside their intervals; mean bias −0.1 %. |
+| 10 | Auto-detect API | PASS | All 4 cases pass. |
+| 11 | R parity | PASS | NADA (60 datasets, 1e-10), survreg (36 fits, 2e-4), conditional means vs `integrate()`, LWPTrends `Impute.lower` (30 datasets, 1e-10). |
+| 12 | Monte Carlo study | — | Bias/RMSE of every method; see `12_monte_carlo/SUMMARY.md`. |
 
-## 3. Strengths & Limitations
-
-### Strengths
-*   **Accuracy:** Extremely high accuracy for the two most common use cases (Simple Left Censoring, Simple Right Censoring).
-*   **Safety:** Guardrails (clamping) and input validation prevent physical impossibilities (e.g., imputing values > LOD).
-*   **Flexibility:** Unified API handles Left, Right, and Mixed censoring seamlessly.
-*   **Performance:** Parametric methods are fully vectorized using `scipy.special` functions, ensuring scalability for large datasets ($N > 10^5$).
-*   **Distribution Support:** Explicit support for both Lognormal and Normal distributions in ROS prevents bias from incorrect transformations.
-*   **Advanced Methodologies:** Support for Hirsch-Stedinger plotting positions allows rigorous handling of multiple detection limits.
-
-### Limitations
-*   **Heuristic Mixed ROS:** The "Impute Left then Right" heuristic is a rough approximation and accumulates error compared to the rigorous Parametric Mixed fit.
-
-## 4. Suggested Next Steps (Roadmap)
-
-### Completed Improvements (v0.2.0)
-*   [x] **Vectorization:** Parametric imputation is now fully vectorized, removing the need for slow iterative integration.
-*   [x] **Normal Distribution Support:** Added `dist` argument to the API to support Linear probability plots, eliminating bias for Normal data.
-*   [x] **Hirsch-Stedinger Plotting Positions:** Upgraded `_ros_left.py` to use `scipy.stats.ecdf` (Kaplan-Meier logic) to handle multiple detection limits with high statistical rigor. Added `plotting_position='simple'` for legacy/reference comparisons.
-
-### Future Improvements
-*   **Interval Censoring:** Implement the Turnbull estimator to support true Interval Censoring (Case II).
+## Limitations (current)
+* Imputations condition on fitted parameters; stochastic imputation is not proper multiple imputation.
+* Results depend on the assumed distribution (cases 04 and 06); choose it deliberately or use `dist='auto'`.
+* Mixed ROS is a sequential approximation, and the Turnbull variants are exploratory; prefer `method='parametric'` for inference on mixed or interval data.

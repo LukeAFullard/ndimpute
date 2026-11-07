@@ -48,32 +48,25 @@ def run_validation():
     if not np.all(df_ros.loc[mask_5, 'imputed_value'] <= 5.0):
         failures.append("Imputations for <5.0 exceed limit.")
 
-    # Check 2: Relative Order (The "Simple" logic check)
-    # Our simplified logic sorts by Value.
-    # So <1 (Obs=1) comes first.
-    # 2 (Obs=2) comes next.
-    # <5 (Obs=5) comes after 2 and 4!
-    # This implies that the regression interprets <5 as a point with Rank higher than 2.
-    # This creates a risk: if the regression line is increasing, the Z-score for <5 will be higher than for 2.
-    # But the *value* of <5 must be imputed.
-    # If Z(<5) > Z(2), then Predicted(<5) > Predicted(2) approx 2.0.
-    # So we expect Imputed(<5) to be around 2~5.
+    # Check 2: Parity with NADA::ros (R, NADA 1.6-1.1).
+    # NADA's unclamped $modeled for these data, mapped to the original row order.
+    # Hirsch-Stedinger places the "<5" values in the lower part of the
+    # distribution BELOW 5, which overlaps "<1" and the detect at 2 -- a "<5"
+    # is not required to be imputed above 2.
+    nada_modeled = np.array([0.843607, 1.329279, 1.329279, 2.479250, 2, 4, 6, 8, 10])
+    df_nada = impute(values, status, method='ros', censoring_type='left', clamp=False)
+    max_diff = np.max(np.abs(df_nada['imputed_value'].values - nada_modeled))
+    print(f"\nMax |ndimpute(clamp=False) - NADA::ros|: {max_diff:.2e}")
+    if max_diff > 1e-5:
+        failures.append(f"Deviation from NADA::ros ({max_diff:.2e}).")
 
     imputed_1 = df_ros.loc[mask_1, 'imputed_value'].mean()
     imputed_5 = df_ros.loc[mask_5, 'imputed_value'].mean()
-    obs_2 = 2.0
-
-    print(f"\nMean Imputed (<1): {imputed_1:.4f}")
-    print(f"Observed (2):      {obs_2:.4f}")
+    print(f"Mean Imputed (<1): {imputed_1:.4f}")
     print(f"Mean Imputed (<5): {imputed_5:.4f}")
 
-    if imputed_1 < obs_2 and imputed_5 > obs_2:
-        print("\n[INFO] Ordering preserved: <1  <  2.0  <  <5")
-    else:
-        print("\n[WARN] Ordering issue: simplified sorting might have distorted ranks.")
-
     if not failures:
-        print("[PASS] Guardrails respected.")
+        print("[PASS] Guardrails respected and NADA::ros reproduced.")
     else:
         print(f"[FAIL] {failures}")
 

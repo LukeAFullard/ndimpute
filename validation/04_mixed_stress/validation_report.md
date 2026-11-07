@@ -2,7 +2,7 @@
 
 ## 1. Test Description
 **What is being tested:**
-Recovery of population parameters from a doubly-censored dataset (Left and Right simultaneously) using Parametric and Heuristic ROS methods.
+Recovery of population parameters from a doubly-censored dataset (Left and Right simultaneously) using Parametric and mixed ROS methods.
 
 **Category:**
 Mixed Censoring, Parametric Fitting, Heuristic Accuracy.
@@ -39,8 +39,8 @@ Imputed Mean: 91.6961
 Bias: 1.4207
 
 --- Method 2: Heuristic ROS ---
-Imputed Mean: 103.2484
-Bias: 12.9729
+Imputed Mean: 99.3566
+Bias: 9.0812
 
 Saved mixed_reconstruction.png
 
@@ -53,10 +53,25 @@ Saved mixed_reconstruction.png
 *[Caption: Comparison of True Data (Gray) vs Parametric Imputation (Blue) and ROS Imputation (Red). The Parametric method (Blue) closely follows the true distribution shape in both tails. The ROS Heuristic (Red) struggles significantly with the right tail, overestimating values, likely due to the "Two-Pass" approach distorting the ranks in the second pass.]*
 
 ## 8. Interpretation & Conclusion
-**Analysis:**
-The **Parametric Method** proved highly effective, recovering the true mean with only **1.5% bias**. This confirms that the generalized likelihood approach in `_parametric.py` correctly utilizes information from both censored tails and the observed middle.
+**Analysis (re-run with v0.1.1):**
+The **parametric method** (`dist='weibull'`) recovers the true mean with **1.6 % bias**.
 
-The **Heuristic ROS Method** showed significant bias (**14%**). This highlights the limitation of the sequential heuristic (Impute Left -> Treat as Observed -> Impute Right). The errors from the first pass propagate to the rank calculations of the second pass. Users should prefer `method='parametric'` for mixed censoring whenever a distribution can be assumed.
+The **mixed ROS** result (+12 to +15, about 14 %) is **not** caused by the sequential procedure; it comes from distributional misspecification. The data are Weibull, while `method='ros'` defaults to `dist='lognormal'` for both steps. Changing only the assumed distribution of the right-censored step fixes it (same data, seed 42):
+
+| Configuration | Bias in mean |
+| :--- | ---: |
+| `method='ros'` (lognormal in both steps) | +12.3 (+13.7 %) |
+| `method='ros', right_dist='weibull'` | +1.4 (+1.5 %) |
+| `method='ros', lwp_compat=True` (LWPTrends v2502) | +1.4 (+1.6 %) |
+| `method='parametric', dist='weibull'` | +1.4 (+1.6 %) |
+| `method='parametric', dist='lognormal'` | +14.1 (+15.6 %) |
+| `method='parametric', dist='auto'` (selects Weibull by likelihood) | +1.4 (+1.6 %) |
+
+The earlier explanation (errors from the first pass propagating to the second pass) is not supported: the sequential ROS performs as well as the parametric fit once the right-tail distribution is appropriate.
+
+**Recommendation:** choose the distribution deliberately (or use `method='parametric', dist='auto'`). For mixed censoring, `method='parametric'` remains the recommended default for inference.
+
+*Note:* the ROS line in the console output varies slightly between runs, because the script does not set `random_state` and the right-censored step draws random values.
 
 **Pass/Fail Status:**
 - [x] **PASS**

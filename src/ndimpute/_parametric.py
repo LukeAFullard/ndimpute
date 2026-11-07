@@ -1,400 +1,250 @@
+"""
+Parametric (maximum-likelihood) imputation for arbitrarily censored data.
+
+1. A distribution is fitted by maximum likelihood to all observations, using
+   the full censored likelihood
+       L(theta) = prod_exact f(x_i) * prod_left F(L_i) * prod_right S(R_i)
+                  * prod_interval [F(r_i) - F(l_i)]
+   (``scipy.stats.CensoredData``; equivalent to ``survival::survreg`` with an
+   intercept-only model, see ``validation/11_r_parity``).
+2. Each censored observation is replaced either by its conditional mean
+   E[X | lo <= X <= hi; theta_hat] or by a random draw from the fitted
+   distribution truncated to [lo, hi].
+
+Conditional means and draws are computed with the numerically stable routines
+in ``_truncated.py`` so imputations always respect their censoring bounds.
+
+Note on uncertainty: imputations condition on the point estimate theta_hat.
+Stochastic draws are therefore *improper* single imputations in the sense of
+Rubin (1987): they reproduce the spread of the data but not the uncertainty in
+theta. Standard errors computed from imputed data will be too small.
+"""
+
+import warnings
+
 import numpy as np
-from scipy.stats import weibull_min, norm, lognorm, CensoredData
-from scipy.special import gamma, gammaincc, gammainc
+from scipy.stats import norm, weibull_min, CensoredData
 
-def impute_right_conditional(values, is_censored, dist='lognormal', impute_type='mean', random_state=None):
+from ._truncated import (
+    norm_trunc_mean, norm_trunc_sample,
+    lognorm_trunc_mean, lognorm_trunc_sample,
+    weibull_trunc_mean, weibull_trunc_sample,
+)
+
+_DISTS = ('lognormal', 'normal', 'weibull')
+
+
+def _classify(lo, hi, positive):
+    """Split bounds into exact / left / right / interval groups."""
+    lower_open = (lo <= 0) if positive else np.isneginf(lo)
+    upper_open = np.isposinf(hi)
+    exact = (lo == hi)
+    left = ~exact & lower_open & ~upper_open
+    right = ~exact & ~lower_open & upper_open
+    interval = ~exact & ~lower_open & ~upper_open
+    both_open = ~exact & lower_open & upper_open
+    return exact, left, right, interval, both_open
+
+
+def fit_parametric(lo, hi, dist='lognormal'):
     """
-    Imputes right-censored data using Conditional Mean Imputation (Vectorized) or Stochastic Imputation.
+    Maximum-likelihood fit of an intercept-only model to censored data.
 
     Args:
-        values (array): Data values.
-        is_censored (bool array): True if value is censored.
-        dist (str): Distribution ('lognormal', 'normal', 'weibull').
-        impute_type (str): 'mean' (default) or 'stochastic'.
-        random_state (int, optional): Seed for reproducibility.
-    """
-    data = np.array(values)
-    cens = np.array(is_censored, dtype=bool)
-
-    if not np.any(cens):
-        return data.copy()
-
-    rng = np.random.default_rng(random_state) if impute_type == 'stochastic' else None
-
-    # Dispatch to specific distribution implementation
-    if dist == 'weibull': # Explicit Weibull
-        return _impute_right_weibull(data, cens, impute_type, rng)
-    elif dist == 'lognormal':
-        return _impute_right_lognormal(data, cens, impute_type, rng)
-    elif dist == 'normal':
-        return _impute_right_normal(data, cens, impute_type, rng)
-    else:
-        raise ValueError(f"Unknown distribution '{dist}' for parametric imputation.")
-
-def impute_mixed_parametric(values, status, dist='lognormal', impute_type='mean', random_state=None):
-    """
-    Imputes mixed-censored data using Conditional Mean Imputation or Stochastic Imputation.
-
-    Args:
-        values (array): Data values.
-        status (array): Censoring status (-1: Left, 0: Obs, 1: Right).
-        dist (str): Distribution ('lognormal', 'normal', 'weibull').
-        impute_type (str): 'mean' (default) or 'stochastic'.
-        random_state (int, optional): Seed for reproducibility.
-    """
-    data = np.array(values)
-    status = np.array(status, dtype=int)
-
-    # Masks
-    mask_obs = (status == 0)
-    mask_left = (status == -1)
-    mask_right = (status == 1)
-
-    rng = np.random.default_rng(random_state) if impute_type == 'stochastic' else None
-
-    if dist == 'weibull':
-         return _impute_mixed_weibull(data, mask_obs, mask_left, mask_right, impute_type, rng)
-    elif dist == 'lognormal':
-         return _impute_mixed_lognormal(data, mask_obs, mask_left, mask_right, impute_type, rng)
-    elif dist == 'normal':
-         return _impute_mixed_normal(data, mask_obs, mask_left, mask_right, impute_type, rng)
-    else:
-         raise ValueError(f"Unknown distribution '{dist}' for parametric imputation.")
-
-# --- Internal Implementations ---
-
-def _impute_right_weibull(data, cens, impute_type='mean', rng=None):
-    """
-    Imputes right-censored data using Weibull distribution.
-
-    Args:
-        data (array): All data points.
-        cens (bool array): True if right-censored.
-        impute_type (str): 'mean' or 'stochastic'.
-        rng (np.random.Generator, optional): Random number generator.
+        lo, hi (array): Bounds for each observation. Exact: lo == hi.
+            Left-censored: lo = -inf (or <= 0 for lognormal/weibull), hi = L.
+            Right-censored: lo = R, hi = inf. Interval: finite lo < hi.
+        dist (str): 'lognormal', 'normal' or 'weibull'.
 
     Returns:
-        array: Imputed data.
+        dict: {'dist', 'params', 'n_exact', 'n_censored', ...}.
+            normal/lognormal params: {'mu', 'sigma'} (lognormal on log scale);
+            weibull params: {'shape', 'scale'}.
     """
-    uncensored_vals = data[~cens]
-    censored_vals = data[cens]
-    cd = CensoredData(uncensored=uncensored_vals, right=censored_vals)
-    shape, loc, scale = weibull_min.fit(cd, floc=0)
+    lo = np.asarray(lo, dtype=float)
+    hi = np.asarray(hi, dtype=float)
+    if dist not in _DISTS:
+        raise ValueError(f"Unknown distribution '{dist}' for parametric imputation. Options: {_DISTS}.")
+    if np.any(lo > hi):
+        raise ValueError("Lower bounds must not exceed upper bounds.")
 
-    imputed = data.copy()
-    C = data[cens]
+    positive = dist in ('lognormal', 'weibull')
+    if positive:
+        # Exact values and upper bounds must be > 0; lower bounds >= 0 (0 = unbounded below).
+        if np.any(hi <= 0) or np.any(lo < 0) or np.any(lo[lo == hi] <= 0):
+            raise ValueError(f"Values must be positive for {dist} distribution.")
 
-    if impute_type == 'stochastic':
-        # Sample from truncated Weibull > C
-        # CDF(x) = 1 - exp(-(x/scale)^shape)
-        # We need to sample U ~ Uniform(CDF(C), 1)
-        # Then x = CDF_inv(U) = scale * (-ln(1-U))^(1/shape)
+    exact, left, right, interval, both_open = _classify(lo, hi, positive)
+    n_exact = int(np.sum(exact))
+    n_bounded = n_exact + int(np.sum(interval))  # observations bounded on both sides
+    if n_bounded < 2:
+        raise ValueError("At least 2 exactly observed (or finite-interval) values are needed to fit "
+                         "a parametric model.")
+    if n_bounded < 5:
+        warnings.warn(f"Only {n_bounded} exactly observed / finite-interval values; the parametric fit "
+                      "is poorly determined.", UserWarning, stacklevel=3)
 
-        cdf_C = 1.0 - np.exp(-(C / scale) ** shape)
-        # Ensure cdf_C is strictly < 1.0
-        cdf_C = np.minimum(cdf_C, 1.0 - 1e-9)
+    keep = ~both_open  # (-inf, inf) carries no information
 
-        u = rng.uniform(low=cdf_C, high=1.0)
-        # Avoid log(0) if u is exactly 1 (which shouldn't happen with uniform[low, 1.0) usually, but safe guard)
-        u = np.minimum(u, 1.0 - 1e-15)
-
-        sampled_val = scale * (-np.log(1.0 - u)) ** (1.0 / shape)
-        imputed[cens] = sampled_val
+    if dist == 'lognormal':
+        t = np.log
     else:
-        u_c = (C / scale) ** shape
-        mean_unconditional = scale * gamma(1 + 1.0/shape)
-        integral_upper = mean_unconditional * gammaincc(1.0 + 1.0/shape, u_c)
-        S_C = np.exp(-u_c)
-        valid_mask = S_C > 1e-15
-        expected_val = C.copy()
-        expected_val[valid_mask] = integral_upper[valid_mask] / S_C[valid_mask]
-        expected_val[~valid_mask] = C[~valid_mask] # Fallback
-        imputed[cens] = expected_val
+        t = lambda x: x  # noqa: E731
 
-    return imputed
-
-def _impute_mixed_weibull(data, mask_obs, mask_left, mask_right, impute_type='mean', rng=None):
-    """
-    Imputes mixed-censored data using Weibull distribution.
-
-    Args:
-        data (array): All data points.
-        mask_obs (bool array): True if observed.
-        mask_left (bool array): True if left-censored.
-        mask_right (bool array): True if right-censored.
-        impute_type (str): 'mean' or 'stochastic'.
-        rng (np.random.Generator, optional): Random number generator.
-
-    Returns:
-        array: Imputed data.
-    """
     cd = CensoredData(
-        uncensored=data[mask_obs],
-        left=data[mask_left],
-        right=data[mask_right]
+        uncensored=t(lo[exact & keep]),
+        left=t(hi[left & keep]),
+        right=t(lo[right & keep]),
+        interval=np.column_stack([t(lo[interval & keep]), t(hi[interval & keep])])
+        if np.any(interval) else None,
     )
-    shape, loc, scale = weibull_min.fit(cd, floc=0)
 
-    imputed = data.copy()
-    mean_unconditional = scale * gamma(1 + 1.0/shape)
-
-    if np.any(mask_left):
-        L = data[mask_left]
-        if impute_type == 'stochastic':
-            # Sample from truncated Weibull < L
-            # U ~ Uniform(0, CDF(L))
-            cdf_L = 1.0 - np.exp(-(L / scale) ** shape)
-            cdf_L = np.maximum(cdf_L, 1e-9) # Avoid 0 range
-
-            u = rng.uniform(low=0.0, high=cdf_L)
-            sampled_val = scale * (-np.log(1.0 - u)) ** (1.0 / shape)
-            imputed[mask_left] = sampled_val
-        else:
-            u_L = (L / scale) ** shape
-            F_L = 1.0 - np.exp(-u_L)
-            integral_lower = mean_unconditional * gammainc(1.0 + 1.0/shape, u_L)
-            valid_mask = F_L > 1e-15
-            vals = L.copy()
-            vals[valid_mask] = integral_lower[valid_mask] / F_L[valid_mask]
-            vals[~valid_mask] = L[~valid_mask] / 2.0
-            imputed[mask_left] = vals
-
-    if np.any(mask_right):
-        R = data[mask_right]
-        if impute_type == 'stochastic':
-            # Sample from truncated Weibull > R
-            cdf_R = 1.0 - np.exp(-(R / scale) ** shape)
-            cdf_R = np.minimum(cdf_R, 1.0 - 1e-9)
-
-            u = rng.uniform(low=cdf_R, high=1.0)
-            u = np.minimum(u, 1.0 - 1e-15)
-
-            sampled_val = scale * (-np.log(1.0 - u)) ** (1.0 / shape)
-            imputed[mask_right] = sampled_val
-        else:
-            u_R = (R / scale) ** shape
-            S_R = np.exp(-u_R)
-            integral_upper = mean_unconditional * gammaincc(1.0 + 1.0/shape, u_R)
-            valid_mask = S_R > 1e-15
-            vals = R.copy()
-            vals[valid_mask] = integral_upper[valid_mask] / S_R[valid_mask]
-            vals[~valid_mask] = R[~valid_mask] # Fallback
-            imputed[mask_right] = vals
-
-    return imputed
-
-def _impute_mixed_normal(data, mask_obs, mask_left, mask_right, impute_type='mean', rng=None):
-    """
-    Imputes mixed-censored data using Normal distribution.
-
-    Args:
-        data (array): All data points.
-        mask_obs (bool array): True if observed.
-        mask_left (bool array): True if left-censored.
-        mask_right (bool array): True if right-censored.
-        impute_type (str): 'mean' or 'stochastic'.
-        rng (np.random.Generator, optional): Random number generator.
-
-    Returns:
-        array: Imputed data.
-    """
-    # Fit Normal
-    cd = CensoredData(
-        uncensored=data[mask_obs],
-        left=data[mask_left],
-        right=data[mask_right]
-    )
-    mu, std = norm.fit(cd)
-
-    imputed = data.copy()
-
-    # E[X | X < L]
-    if np.any(mask_left):
-        L = data[mask_left]
-        if impute_type == 'stochastic':
-            # Truncated Normal < L
-            # U ~ Uniform(0, CDF(L))
-            z_L = (L - mu) / std
-            cdf_L = norm.cdf(z_L)
-            cdf_L = np.maximum(cdf_L, 1e-9)
-
-            u = rng.uniform(low=0.0, high=cdf_L)
-            z_sampled = norm.ppf(u)
-            imputed[mask_left] = mu + std * z_sampled
-        else:
-            z = (L - mu) / std
-            pdf_z = norm.pdf(z)
-            cdf_z = norm.cdf(z)
-            valid = cdf_z > 1e-15
-            impute_vals = L.copy()
-            impute_vals[valid] = mu - std * (pdf_z[valid] / cdf_z[valid])
-            impute_vals[~valid] = L[~valid]
-            imputed[mask_left] = impute_vals
-
-    # E[X | X > R]
-    if np.any(mask_right):
-        R = data[mask_right]
-        if impute_type == 'stochastic':
-            # Truncated Normal > R
-            # U ~ Uniform(CDF(R), 1)
-            z_R = (R - mu) / std
-            cdf_R = norm.cdf(z_R)
-            cdf_R = np.minimum(cdf_R, 1.0 - 1e-9)
-
-            u = rng.uniform(low=cdf_R, high=1.0)
-            u = np.minimum(u, 1.0 - 1e-15)
-            z_sampled = norm.ppf(u)
-            imputed[mask_right] = mu + std * z_sampled
-        else:
-            z = (R - mu) / std
-            pdf_z = norm.pdf(z)
-            sf_z = 1.0 - norm.cdf(z)
-            valid = sf_z > 1e-15
-            impute_vals = R.copy()
-            impute_vals[valid] = mu + std * (pdf_z[valid] / sf_z[valid])
-            impute_vals[~valid] = R[~valid]
-            imputed[mask_right] = impute_vals
-
-    return imputed
-
-def _impute_right_normal(data, cens, impute_type='mean', rng=None):
-    """
-    Imputes right-censored data using Normal distribution.
-
-    Args:
-        data (array): All data points.
-        cens (bool array): True if right-censored.
-        impute_type (str): 'mean' or 'stochastic'.
-        rng (np.random.Generator, optional): Random number generator.
-
-    Returns:
-        array: Imputed data.
-    """
-    # Specialized for Right Only (can reuse mixed logic)
-    mask_obs = ~cens
-    mask_left = np.zeros(len(data), dtype=bool)
-    mask_right = cens
-    return _impute_mixed_normal(data, mask_obs, mask_left, mask_right, impute_type, rng)
-
-def _impute_mixed_lognormal(data, mask_obs, mask_left, mask_right, impute_type='mean', rng=None):
-    """
-    Imputes mixed-censored data using LogNormal distribution.
-
-    Args:
-        data (array): All data points.
-        mask_obs (bool array): True if observed.
-        mask_left (bool array): True if left-censored.
-        mask_right (bool array): True if right-censored.
-        impute_type (str): 'mean' or 'stochastic'.
-        rng (np.random.Generator, optional): Random number generator.
-
-    Returns:
-        array: Imputed data.
-    """
-    if (data <= 0).any():
-        raise ValueError("Values must be positive for lognormal distribution.")
-
-    log_data = np.log(data)
-
-    # We can reuse the normal implementation by operating on log data,
-    # then exponentiating the result for stochastic mode.
-    # For mean mode, we need the specific lognormal conditional expectation formula.
-
-    if impute_type == 'stochastic':
-        # Fit Normal on log data
-        cd = CensoredData(
-            uncensored=log_data[mask_obs],
-            left=log_data[mask_left],
-            right=log_data[mask_right]
-        )
-        mu, std = norm.fit(cd)
-
-        imputed = data.copy()
-
-        if np.any(mask_left):
-            L = data[mask_left]
-            ln_L = np.log(L)
-            z_L = (ln_L - mu) / std
-            cdf_L = norm.cdf(z_L)
-            cdf_L = np.maximum(cdf_L, 1e-9)
-
-            u = rng.uniform(low=0.0, high=cdf_L)
-            z_sampled = norm.ppf(u)
-            imputed[mask_left] = np.exp(mu + std * z_sampled)
-
-        if np.any(mask_right):
-            R = data[mask_right]
-            ln_R = np.log(R)
-            z_R = (ln_R - mu) / std
-            cdf_R = norm.cdf(z_R)
-            cdf_R = np.minimum(cdf_R, 1.0 - 1e-9)
-
-            u = rng.uniform(low=cdf_R, high=1.0)
-            u = np.minimum(u, 1.0 - 1e-15)
-            z_sampled = norm.ppf(u)
-            imputed[mask_right] = np.exp(mu + std * z_sampled)
-
-        return imputed
-
+    if dist in ('lognormal', 'normal'):
+        mu, sigma = norm.fit(cd)
+        params = {'mu': float(mu), 'sigma': float(sigma)}
+        ok = np.isfinite(mu) and np.isfinite(sigma) and sigma > 0
     else:
-        # Mean mode requires the specific integral formula implemented previously
-        # Fit on log data
-        cd = CensoredData(
-            uncensored=log_data[mask_obs],
-            left=log_data[mask_left],
-            right=log_data[mask_right]
-        )
-        mu, std = norm.fit(cd)
+        shape, _, scale = weibull_min.fit(cd, floc=0)
+        params = {'shape': float(shape), 'scale': float(scale)}
+        ok = np.isfinite(shape) and np.isfinite(scale) and shape > 0 and scale > 0
 
-        imputed = data.copy()
-        mean_unconditional = np.exp(mu + 0.5 * std**2)
+    if not ok:
+        raise ValueError(f"Maximum-likelihood fit for '{dist}' failed (parameters: {params}).")
 
-        if np.any(mask_left):
-            L = data[mask_left]
-            ln_L = np.log(L)
-            alpha = (ln_L - mu) / std
+    return {
+        'dist': dist,
+        'params': params,
+        'n_exact': n_exact,
+        'n_left': int(np.sum(left)),
+        'n_right': int(np.sum(right)),
+        'n_interval': int(np.sum(interval)),
+    }
 
-            Phi_alpha = norm.cdf(alpha)
-            Phi_shifted = norm.cdf(alpha - std)
 
-            valid = Phi_alpha > 1e-15
-            vals = L.copy()
-            vals[valid] = mean_unconditional * (Phi_shifted[valid] / Phi_alpha[valid])
-            vals[~valid] = L[~valid] # Fallback
-
-            imputed[mask_left] = vals
-
-        if np.any(mask_right):
-            R = data[mask_right]
-            ln_R = np.log(R)
-            alpha = (ln_R - mu) / std
-
-            Sf_alpha = 1.0 - norm.cdf(alpha)
-            Sf_shifted = 1.0 - norm.cdf(alpha - std)
-
-            valid = Sf_alpha > 1e-15
-            vals = R.copy()
-            vals[valid] = mean_unconditional * (Sf_shifted[valid] / Sf_alpha[valid])
-            vals[~valid] = R[~valid] # Fallback
-
-            imputed[mask_right] = vals
-
-        return imputed
-
-def _impute_right_lognormal(data, cens, impute_type='mean', rng=None):
+def impute_parametric_bounds(lo, hi, dist='lognormal', impute_type='mean', random_state=None,
+                             return_fit=False):
     """
-    Imputes right-censored data using LogNormal distribution.
+    Fit a distribution by MLE and impute every non-exact observation.
 
     Args:
-        data (array): All data points.
-        cens (bool array): True if right-censored.
-        impute_type (str): 'mean' or 'stochastic'.
-        rng (np.random.Generator, optional): Random number generator.
-
-    Returns:
-        array: Imputed data.
+        lo, hi (array): Bounds (see ``fit_parametric``).
+        dist (str): 'lognormal', 'normal' or 'weibull'.
+        impute_type (str): 'mean' (conditional expectation) or 'stochastic'
+            (draw from the fitted distribution truncated to [lo, hi]).
+        random_state (int or Generator, optional): Seed for 'stochastic'.
+        return_fit (bool): If True, also return the fit dictionary.
     """
-    mask_obs = ~cens
-    mask_left = np.zeros(len(data), dtype=bool)
-    mask_right = cens
-    return _impute_mixed_lognormal(data, mask_obs, mask_left, mask_right, impute_type, rng)
+    lo = np.asarray(lo, dtype=float)
+    hi = np.asarray(hi, dtype=float)
+    if impute_type not in ('mean', 'stochastic'):
+        raise ValueError(f"Unknown impute_type '{impute_type}' for parametric imputation. "
+                         "Options: 'mean', 'stochastic'.")
+
+    fit = fit_parametric(lo, hi, dist=dist)
+    p = fit['params']
+
+    imputed = lo.copy()
+    cens = lo != hi
+    if np.any(cens):
+        l_c, h_c = lo[cens], hi[cens]
+        if impute_type == 'stochastic':
+            rng = np.random.default_rng(random_state)
+            u = rng.uniform(size=int(np.sum(cens)))
+            if dist == 'normal':
+                imputed[cens] = norm_trunc_sample(p['mu'], p['sigma'], l_c, h_c, u)
+            elif dist == 'lognormal':
+                imputed[cens] = lognorm_trunc_sample(p['mu'], p['sigma'], l_c, h_c, u)
+            else:
+                imputed[cens] = weibull_trunc_sample(p['shape'], p['scale'], l_c, h_c, u)
+        else:
+            if dist == 'normal':
+                imputed[cens] = norm_trunc_mean(p['mu'], p['sigma'], l_c, h_c)
+            elif dist == 'lognormal':
+                imputed[cens] = lognorm_trunc_mean(p['mu'], p['sigma'], l_c, h_c)
+            else:
+                imputed[cens] = weibull_trunc_mean(p['shape'], p['scale'], l_c, h_c)
+
+    return (imputed, fit) if return_fit else imputed
+
+
+def _status_to_bounds(data, status, dist):
+    data = np.asarray(data, dtype=float)
+    status = np.asarray(status, dtype=int)
+    if not np.all(np.isin(status, (-1, 0, 1))):
+        raise ValueError("status must contain only -1 (left), 0 (observed) and 1 (right).")
+    lower_open = 0.0 if dist in ('lognormal', 'weibull') else -np.inf
+    lo = np.where(status == -1, lower_open, data)
+    hi = np.where(status == 1, np.inf, data)
+    return lo, hi
+
+
+def impute_mixed_parametric(values, status, dist='lognormal', impute_type='mean', random_state=None,
+                            return_fit=False):
+    """
+    Parametric imputation for left-, right- and mixed-censored data.
+
+    Args:
+        values (array): Observed values or censoring limits.
+        status (array): -1 left-censored ("<L"), 0 observed, 1 right-censored (">R").
+        dist (str): 'lognormal', 'normal' or 'weibull'.
+        impute_type (str): 'mean' (default) or 'stochastic'.
+        random_state (int, optional): Seed for 'stochastic'.
+        return_fit (bool): If True, returns (imputed, fit_dict).
+    """
+    if dist not in _DISTS:
+        raise ValueError(f"Unknown distribution '{dist}' for parametric imputation. Options: {_DISTS}.")
+    data = np.asarray(values, dtype=float)
+    if dist in ('lognormal', 'weibull') and np.any(data <= 0):
+        raise ValueError(f"Values must be positive for {dist} distribution.")
+    lo, hi = _status_to_bounds(data, status, dist)
+    return impute_parametric_bounds(lo, hi, dist=dist, impute_type=impute_type,
+                                    random_state=random_state, return_fit=return_fit)
+
+
+def impute_right_conditional(values, is_censored, dist='lognormal', impute_type='mean', random_state=None,
+                             return_fit=False):
+    """Parametric imputation for right-censored data (True = censored ">C")."""
+    status = np.where(np.asarray(is_censored, dtype=bool), 1, 0)
+    return impute_mixed_parametric(values, status, dist=dist, impute_type=impute_type,
+                                   random_state=random_state, return_fit=return_fit)
+
+
+def impute_left_parametric(values, is_censored, dist='lognormal', impute_type='mean', random_state=None,
+                           return_fit=False):
+    """Parametric imputation for left-censored data (True = censored "<L")."""
+    status = np.where(np.asarray(is_censored, dtype=bool), -1, 0)
+    return impute_mixed_parametric(values, status, dist=dist, impute_type=impute_type,
+                                   random_state=random_state, return_fit=return_fit)
+
+
+def log_likelihood(fit, lo, hi):
+    """
+    Censored log-likelihood of a fitted model on the ORIGINAL data scale
+    (lognormal densities include the Jacobian), so values are comparable
+    across distributions with the same number of parameters.
+    """
+    from scipy.stats import lognorm
+    lo = np.asarray(lo, dtype=float)
+    hi = np.asarray(hi, dtype=float)
+    p = fit['params']
+    if fit['dist'] == 'normal':
+        d = norm(loc=p['mu'], scale=p['sigma'])
+        lo_eff = lo
+    elif fit['dist'] == 'lognormal':
+        d = lognorm(s=p['sigma'], scale=np.exp(p['mu']))
+        lo_eff = np.where(lo < 0, 0.0, lo)
+    else:
+        d = weibull_min(p['shape'], scale=p['scale'])
+        lo_eff = np.where(lo < 0, 0.0, lo)
+    exact = lo_eff == hi
+    ll = np.sum(d.logpdf(lo_eff[exact]))
+    c = ~exact
+    if np.any(c):
+        with np.errstate(divide='ignore'):
+            mass = d.cdf(hi[c]) - d.cdf(lo_eff[c])
+            # Use survival functions in the upper tail for accuracy
+            upper = lo_eff[c] > d.median()
+            mass_up = d.sf(lo_eff[c]) - d.sf(hi[c])
+            mass = np.where(upper, mass_up, mass)
+            ll += np.sum(np.log(np.maximum(mass, 1e-300)))
+    return float(ll)

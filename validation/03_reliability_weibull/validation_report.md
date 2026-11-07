@@ -53,7 +53,7 @@ The parametric imputation performed exceptionally well, with an error of less th
 **Discussion of the "Spike":**
 The distribution plot reveals a prominent spike in the blue histogram at $x \approx 76.7$. This is an expected artifact of **Deterministic Conditional Mean Imputation**.
 *   **Cause:** All 230 censored observations share the exact same censoring time ($T=60$). The algorithm imputes each of them with the *single* expected value $E[T | T > 60]$.
-*   **Implication:** While this method yields an **unbiased estimate of the population mean** (MTTF), it artificially reduces the variance of the tail. Instead of reconstructing the spread of the unobserved tail, it collapses that probability mass into its center of gravity. Users requiring a realistic variance structure for the tail should consider multiple imputation (stochastic sampling from the conditional survival function), which is outside the scope of this deterministic implementation.
+*   **Implication:** While this method yields an **unbiased estimate of the population mean** (MTTF), it artificially reduces the variance of the tail. Instead of reconstructing the spread of the unobserved tail, it collapses that probability mass into its center of gravity. Users requiring a realistic spread in the tail should use `impute_type='stochastic'`, which draws each value exactly from the fitted Weibull conditional on $T > C$. The Weibull MLE and conditional means are now also validated directly against `survival::survreg` and numerical integration in R (`validation/11_r_parity`).
 
 **Pass/Fail Status:**
 - [x] **PASS**
